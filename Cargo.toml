@@ -1,0 +1,37 @@
+[package]
+name = "ldk-server-agent"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["llm"]
+llm = ["dep:llama-cpp-2", "dep:encoding_rs"]
+
+[dependencies]
+# LLM inference (GGUF models via llama.cpp)
+llama-cpp-2 = { version = "0.1", optional = true }
+
+# Async runtime (for MCP child process I/O)
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "time"] }
+
+# JSON (MCP protocol + tool-call parsing)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# CLI readline
+rustyline = "15"
+
+# Config file
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+
+# UTF-8 streaming decoder (used by llama-cpp-2 token_to_piece)
+encoding_rs = { version = "0.8", optional = true }
+
+# Error handling
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

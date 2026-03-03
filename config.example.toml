@@ -1,0 +1,32 @@
+[model]
+# Path to the GGUF model file (e.g., Qwen3-8B Q4_K_M)
+model_path = "/path/to/qwen3-8b-q4_k_m.gguf"
+
+# Optional: Path to a LoRA adapter file
+# lora_path = "/path/to/lora-adapter.gguf"
+
+# Number of context tokens (default: 8192)
+# context_size = 8192
+
+# Number of GPU layers to offload (default: 0 for CPU-only)
+# gpu_layers = 0
+
+# Number of threads for inference (default: number of physical cores)
+# threads = 8
+
+[mcp]
+# Path to the ldk-server-mcp binary
+binary_path = "/path/to/ldk-server-mcp"
+
+# Environment variables passed to the MCP server process
+[[mcp.env]]
+key = "LDK_BASE_URL"
+value = "localhost:3001"
+
+[[mcp.env]]
+key = "LDK_API_KEY"
+value = "your-api-key"
+
+[[mcp.env]]
+key = "LDK_TLS_CERT_PATH"
+value = "/path/to/cert.pem"
