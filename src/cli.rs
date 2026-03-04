@@ -79,19 +79,25 @@ pub async fn run_repl(
         "Type your questions about your Lightning node. Type /quit to exit, /clear to reset.\n"
     );
 
-    const BOTTOM_PADDING: usize = 2;
+    const BOTTOM_PADDING: usize = 1;
 
     loop {
         let width = term_width();
 
         // Reserve vertical space so the input box floats above the terminal bottom.
-        // Print newlines to force scroll (if at the edge), then cursor back up.
-        let reserve = BOTTOM_PADDING + 2; // 2 lines for the box itself
+        // The box is 3 lines: top border + input + bottom border.
+        let reserve = BOTTOM_PADDING + 3;
         print!("{}\x1b[{}A", "\n".repeat(reserve), reserve);
         let _ = std::io::stdout().flush();
 
-        // Print the grey top border and set up the prompt.
+        // Print the grey box frame (top, empty input line, bottom), then
+        // cursor back up to the input line so readline types inside the box.
         println!("{}", draw_box_top(width, "you", false));
+        println!("{}", box_prompt(false));
+        print!("{}", draw_box_bottom(width, false));
+        // Move cursor up to the input line, position after the "│ " prompt.
+        print!("\x1b[1A\r");
+        let _ = std::io::stdout().flush();
         let prompt = box_prompt(false);
 
         let readline = rl.readline(&prompt);
@@ -99,8 +105,8 @@ pub async fn run_repl(
             Ok(line) => {
                 let input = line.trim();
                 if input.is_empty() {
-                    // Erase the partial box: move up 2 lines (top border + input line) and clear.
-                    print!("\x1b[1A\x1b[2K\x1b[1A\x1b[2K");
+                    // Erase the full box (top + input + bottom = 3 lines).
+                    print!("\x1b[1A\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2K");
                     let _ = std::io::stdout().flush();
                     continue;
                 }
@@ -108,43 +114,42 @@ pub async fn run_repl(
                 let _ = rl.add_history_entry(input);
 
                 if input.starts_with('/') {
-                    // Close the box with a grey bottom border, then handle the command.
-                    println!("{}", draw_box_bottom(width, false));
+                    // Bottom border is already drawn; just move past it.
+                    println!();
                     match handle_command(input, &mut conversation) {
                         CommandResult::Continue => continue,
                         CommandResult::Quit => break,
                     }
                 }
 
-                // Reprint the box in bright: cursor-up over the input lines + top border.
+                // Reprint the entire box in bright.
                 // Calculate how many terminal rows the input line occupies.
-                // The prompt is "│ " (2 display cols), so content starts at col 3.
                 let prompt_display_width = 2; // "│ "
                 let content_len = input.len() + prompt_display_width;
                 let input_rows = content_len.saturating_sub(1) / width + 1;
-                let lines_up = input_rows + 1; // +1 for top border
+                // +1 top border, +1 pre-drawn bottom border
+                let lines_up = input_rows + 2;
 
-                // Move up, reprint top border in bright
+                // Move up to top border and reprint in bright
                 print!(
                     "\x1b[{}A\x1b[2K{}",
                     lines_up,
                     draw_box_top(width, "you", true)
                 );
-                // Move down and reprint each input row in bright
+                // Reprint input line in bright
                 let bright_prompt = box_prompt(true);
                 for _ in 0..input_rows {
                     print!("\n\x1b[2K");
                 }
-                // Re-position cursor: move back up to the input line, print it
                 print!("\x1b[{}A", input_rows);
                 print!("\r\x1b[2K{}{}", bright_prompt, input);
-                // Move to the end
                 for _ in 1..input_rows {
                     print!("\n");
                 }
                 println!();
 
-                // Print bright bottom border
+                // Reprint bottom border in bright (overwrite the grey one)
+                print!("\x1b[2K");
                 println!("{}", draw_box_bottom(width, true));
 
                 let _ = std::io::stdout().flush();
@@ -229,15 +234,13 @@ pub async fn run_repl(
                 }
             }
             Err(ReadlineError::Interrupted) => {
-                // Ctrl-C: close the box with grey bottom border
+                // Ctrl-C: bottom border already drawn, just move past it.
                 println!();
-                println!("{}", draw_box_bottom(width, false));
                 continue;
             }
             Err(ReadlineError::Eof) => {
-                // Ctrl-D: close the box with grey bottom border
+                // Ctrl-D: bottom border already drawn, just move past it.
                 println!();
-                println!("{}", draw_box_bottom(width, false));
                 break;
             }
             Err(err) => {
