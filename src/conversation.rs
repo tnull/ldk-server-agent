@@ -65,18 +65,9 @@ impl Conversation {
                 break;
             }
 
-            eprintln!("[Round {}: generating...]", rounds + 1);
-
             let generated = llm
                 .generate(&self.messages, &self.tools, on_token)
                 .context("LLM generation failed")?;
-
-            eprintln!(
-                "\n[Round {} raw output ({} chars): {}]",
-                rounds + 1,
-                generated.len(),
-                truncate_for_log(&generated, 300)
-            );
 
             let (tool_calls, text) = tool_call::parse_tool_calls(&generated);
 
@@ -88,17 +79,6 @@ impl Conversation {
                 });
                 return Ok(text);
             }
-
-            eprintln!(
-                "[Round {}: {} tool call(s), remaining text: {}]",
-                rounds + 1,
-                tool_calls.len(),
-                if text.is_empty() {
-                    "(none)".to_string()
-                } else {
-                    truncate_for_log(&text, 100)
-                }
-            );
 
             // The model wants to call tools
             self.messages.push(ChatMessage {
@@ -147,10 +127,6 @@ impl Conversation {
                 ));
             }
         }
-
-        // Debug: show tool name and arguments
-        let args_compact = serde_json::to_string(&call.arguments).unwrap_or_default();
-        eprintln!("\n[Calling tool: {} | args: {}]", call.name, args_compact);
 
         // Start a timer thread to show elapsed time while the tool call runs
         let tool_name = call.name.clone();

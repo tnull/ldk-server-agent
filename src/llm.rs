@@ -164,7 +164,7 @@ mod engine {
                 .map_err(|e| anyhow::anyhow!("Failed to tokenize prompt: {:?}", e))?;
 
             eprintln!(
-                "[LLM: {} tokens / {} context, {} messages, stops: {:?}]",
+                "\x1b[90m[LLM: {} tokens / {} context, {} messages, stops: {:?}]\x1b[0m",
                 tokens.len(),
                 self.context_size,
                 messages.len(),
