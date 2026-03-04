@@ -8,7 +8,6 @@
 const BOLD: &str = "\x1b[1m";
 const ITALIC: &str = "\x1b[3m";
 const UNDERLINE: &str = "\x1b[4m";
-const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 
 /// A line-buffering markdown renderer for streaming token output.
@@ -61,12 +60,9 @@ impl StreamRenderer {
             if self.in_tool_call {
                 if let Some(close_idx) = rest.find(CLOSE) {
                     let end = close_idx + CLOSE.len();
-                    let tool_chunk = &rest[..end];
-                    emit(&format!("{DIM}{tool_chunk}{RESET}"));
                     self.in_tool_call = false;
                     rest = &rest[end..];
                 } else {
-                    emit(&format!("{DIM}{rest}{RESET}"));
                     break;
                 }
             } else if let Some(open_idx) = rest.find(OPEN) {
@@ -74,8 +70,6 @@ impl StreamRenderer {
                 if !before.is_empty() {
                     emit(&render_line(before));
                 }
-
-                emit(&format!("{DIM}{OPEN}{RESET}"));
                 self.in_tool_call = true;
                 rest = &rest[open_idx + OPEN.len()..];
             } else {
@@ -306,10 +300,10 @@ mod tests {
         let mut output = String::new();
 
         renderer.push("Here is some text\n", &mut |s| output.push_str(s));
-        assert!(!output.contains(DIM));
+        assert!(!output.contains("<tool_call>"));
 
         renderer.push("<tool_call>\n", &mut |s| output.push_str(s));
-        assert!(output.contains(DIM));
+        assert!(!output.contains("<tool_call>"));
 
         let before = output.clone();
         renderer.push("{\"name\": \"get_balances\"}\n", &mut |s| {
@@ -317,8 +311,8 @@ mod tests {
         });
         let new_part = &output[before.len()..];
         assert!(
-            new_part.contains(DIM),
-            "content inside tool_call should be dim"
+            new_part.trim().is_empty(),
+            "tool_call content should be hidden"
         );
 
         renderer.push("</tool_call>\n", &mut |s| output.push_str(s));
@@ -326,7 +320,7 @@ mod tests {
         let before = output.clone();
         renderer.push("Normal again\n", &mut |s| output.push_str(s));
         let new_part = &output[before.len()..];
-        assert!(!new_part.contains(DIM));
+        assert!(!new_part.contains("<tool_call>"));
     }
 
     #[test]
@@ -341,10 +335,10 @@ mod tests {
         renderer.flush(&mut |s| output.push_str(s));
 
         assert!(output.contains("Now plain text"));
-        assert!(output.contains("</tool_call>"));
+        assert!(!output.contains("</tool_call>"));
         assert!(
-            output.contains(&format!("{RESET}Now plain text")),
-            "text after </tool_call> should render outside dim styling"
+            output.ends_with("Now plain text"),
+            "text after </tool_call> should remain visible"
         );
     }
 }
