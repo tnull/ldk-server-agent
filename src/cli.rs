@@ -79,8 +79,16 @@ pub async fn run_repl(
         "Type your questions about your Lightning node. Type /quit to exit, /clear to reset.\n"
     );
 
+    const BOTTOM_PADDING: usize = 2;
+
     loop {
         let width = term_width();
+
+        // Reserve vertical space so the input box floats above the terminal bottom.
+        // Print newlines to force scroll (if at the edge), then cursor back up.
+        let reserve = BOTTOM_PADDING + 2; // 2 lines for the box itself
+        print!("{}\x1b[{}A", "\n".repeat(reserve), reserve);
+        let _ = std::io::stdout().flush();
 
         // Print the grey top border and set up the prompt.
         println!("{}", draw_box_top(width, "you", false));
