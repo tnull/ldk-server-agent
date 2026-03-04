@@ -33,7 +33,7 @@ mod engine {
     use anyhow::{Context, bail};
     use llama_cpp_2::LogOptions;
     use llama_cpp_2::context::LlamaContext;
-    use llama_cpp_2::context::params::LlamaContextParams;
+    use llama_cpp_2::context::params::{KvCacheType, LlamaContextParams};
     use llama_cpp_2::llama_backend::LlamaBackend;
     use llama_cpp_2::llama_batch::LlamaBatch;
     use llama_cpp_2::model::params::LlamaModelParams;
@@ -185,7 +185,10 @@ mod engine {
                 .with_n_ctx(NonZeroU32::new(n_ctx))
                 .with_n_batch(n_ctx)
                 .with_n_threads(self.threads)
-                .with_n_threads_batch(self.threads);
+                .with_n_threads_batch(self.threads)
+                .with_flash_attention_policy(1 /* LLAMA_FLASH_ATTN_TYPE_ENABLED */)
+                .with_type_k(KvCacheType::Q8_0)
+                .with_type_v(KvCacheType::Q8_0);
 
             let mut ctx: LlamaContext = self
                 .model
