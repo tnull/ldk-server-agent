@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod conversation;
 mod llm;
+mod markdown;
 mod mcp;
 mod prompt;
 mod safety;

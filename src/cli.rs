@@ -9,6 +9,7 @@ use rustyline::error::ReadlineError;
 
 use crate::conversation::Conversation;
 use crate::llm::LlmEngine;
+use crate::markdown::StreamRenderer;
 use crate::mcp::McpClient;
 
 const HISTORY_FILE: &str = ".ldk-agent-history";
@@ -71,26 +72,39 @@ pub async fn run_repl(
 
                 let got_first_for_cb = Arc::clone(&got_first_token);
                 let mut first_token_time = None;
-                let mut on_token = |token: &str| {
-                    if !got_first_for_cb.load(Ordering::Relaxed) {
-                        got_first_for_cb.store(true, Ordering::Relaxed);
-                        first_token_time = Some(start.elapsed());
-                        // Clear the timer line and print the assistant prefix
-                        eprint!("\r\x1b[2K");
-                        print!("assistant> ");
-                    }
-                    print!("{}", token);
-                    let _ = std::io::stdout().flush();
+                let mut md_renderer = StreamRenderer::new();
+
+                let result = {
+                    let md = &mut md_renderer;
+                    let ftt = &mut first_token_time;
+                    let mut on_token = |token: &str| {
+                        if !got_first_for_cb.load(Ordering::Relaxed) {
+                            got_first_for_cb.store(true, Ordering::Relaxed);
+                            *ftt = Some(start.elapsed());
+                            eprint!("\r\x1b[2K");
+                            print!("assistant> ");
+                        }
+                        md.push(token, &mut |rendered| {
+                            print!("{}", rendered);
+                            let _ = std::io::stdout().flush();
+                        });
+                    };
+
+                    let mut confirm_fn =
+                        |_name: &str, description: &str, _args: &serde_json::Value| -> bool {
+                            confirm_action(description)
+                        };
+
+                    conversation
+                        .send_message(input, &llm, &mut mcp, &mut on_token, &mut confirm_fn)
+                        .await
                 };
 
-                let mut confirm_fn = |_name: &str,
-                                      description: &str,
-                                      _args: &serde_json::Value|
-                 -> bool { confirm_action(description) };
-
-                let result = conversation
-                    .send_message(input, &llm, &mut mcp, &mut on_token, &mut confirm_fn)
-                    .await;
+                // Flush any remaining partial line from the renderer.
+                md_renderer.flush(&mut |rendered| {
+                    print!("{}", rendered);
+                    let _ = std::io::stdout().flush();
+                });
 
                 // Stop the timer thread
                 timer_stop.store(true, Ordering::Relaxed);

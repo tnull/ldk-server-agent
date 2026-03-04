@@ -65,9 +65,18 @@ impl Conversation {
                 break;
             }
 
+            eprintln!("[Round {}: generating...]", rounds + 1);
+
             let generated = llm
                 .generate(&self.messages, &self.tools, on_token)
                 .context("LLM generation failed")?;
+
+            eprintln!(
+                "\n[Round {} raw output ({} chars): {}]",
+                rounds + 1,
+                generated.len(),
+                truncate_for_log(&generated, 300)
+            );
 
             let (tool_calls, text) = tool_call::parse_tool_calls(&generated);
 
@@ -79,6 +88,17 @@ impl Conversation {
                 });
                 return Ok(text);
             }
+
+            eprintln!(
+                "[Round {}: {} tool call(s), remaining text: {}]",
+                rounds + 1,
+                tool_calls.len(),
+                if text.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    truncate_for_log(&text, 100)
+                }
+            );
 
             // The model wants to call tools
             self.messages.push(ChatMessage {
@@ -187,11 +207,6 @@ impl Conversation {
             );
             Ok(text)
         }
-    }
-
-    /// Returns the number of messages in the conversation (including system).
-    pub fn message_count(&self) -> usize {
-        self.messages.len()
     }
 
     /// Clears the conversation history (keeping only the system prompt).

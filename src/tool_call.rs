@@ -10,10 +10,19 @@ pub struct ToolCall {
 
 /// Extracts tool calls from the model's output text.
 ///
-/// Qwen3 uses the format:
+/// Supports two formats:
+///
+/// **Qwen3 (JSON):**
 /// ```text
 /// <tool_call>
 /// {"name": "tool_name", "arguments": {"key": "value"}}
+/// </tool_call>
+/// ```
+///
+/// **Qwen3.5 (function tag):**
+/// ```text
+/// <tool_call>
+/// <function=tool_name>{"key": "value"}</function>
 /// </tool_call>
 /// ```
 ///
@@ -32,9 +41,9 @@ pub fn parse_tool_calls(text: &str) -> (Vec<ToolCall>, String) {
             let after_tag = &rest[start_idx + "<tool_call>".len()..];
 
             if let Some(end_idx) = after_tag.find("</tool_call>") {
-                let json_str = after_tag[..end_idx].trim();
+                let inner = after_tag[..end_idx].trim();
 
-                if let Ok(call) = parse_single_tool_call(json_str) {
+                if let Ok(call) = parse_inner(inner) {
                     tool_calls.push(call);
                 } else {
                     // If parsing fails, treat it as regular text
@@ -58,7 +67,56 @@ pub fn parse_tool_calls(text: &str) -> (Vec<ToolCall>, String) {
     (tool_calls, remaining.trim().to_string())
 }
 
-fn parse_single_tool_call(json_str: &str) -> anyhow::Result<ToolCall> {
+/// Parses the content between `<tool_call>` and `</tool_call>` tags.
+/// Tries the Qwen3.5 function-tag format first, then falls back to Qwen3 JSON.
+fn parse_inner(inner: &str) -> anyhow::Result<ToolCall> {
+    // Try Qwen3.5 format: <function=tool_name>{"key": "value"}</function>
+    // Also handles: <function=tool_name></function> (no arguments)
+    if let Some(call) = try_parse_function_tag(inner) {
+        return Ok(call);
+    }
+
+    // Fall back to Qwen3 JSON format: {"name": "...", "arguments": {...}}
+    parse_json_tool_call(inner)
+}
+
+/// Tries to parse the Qwen3.5 `<function=name>args</function>` format.
+fn try_parse_function_tag(inner: &str) -> Option<ToolCall> {
+    let inner = inner.trim();
+
+    // Match <function=NAME>
+    let func_start = inner.find("<function=")?;
+    let after_eq = &inner[func_start + "<function=".len()..];
+
+    // Find the closing > of the opening tag
+    let gt_idx = after_eq.find('>')?;
+    let name = after_eq[..gt_idx].trim().to_string();
+
+    if name.is_empty() {
+        return None;
+    }
+
+    let after_gt = &after_eq[gt_idx + 1..];
+
+    // Find </function>
+    let end_tag = after_gt.find("</function>")?;
+    let args_str = after_gt[..end_tag].trim();
+
+    let arguments = if args_str.is_empty() {
+        Value::Object(Default::default())
+    } else {
+        serde_json::from_str(args_str).ok()?
+    };
+
+    if !arguments.is_object() {
+        return None;
+    }
+
+    Some(ToolCall { name, arguments })
+}
+
+/// Parses the Qwen3 JSON format: `{"name": "...", "arguments": {...}}`.
+fn parse_json_tool_call(json_str: &str) -> anyhow::Result<ToolCall> {
     let value: Value = serde_json::from_str(json_str).context("Invalid JSON in tool call")?;
 
     let name = value
@@ -79,20 +137,14 @@ fn parse_single_tool_call(json_str: &str) -> anyhow::Result<ToolCall> {
     Ok(ToolCall { name, arguments })
 }
 
-/// Checks if the text appears to contain an incomplete/in-progress tool call.
-/// This is useful during streaming to know when to buffer output.
-pub fn has_pending_tool_call(text: &str) -> bool {
-    let open_count = text.matches("<tool_call>").count();
-    let close_count = text.matches("</tool_call>").count();
-    open_count > close_count
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // --- Qwen3 JSON format tests ---
+
     #[test]
-    fn test_parse_single_tool_call() {
+    fn test_parse_single_tool_call_json() {
         let text = r#"Let me check your balance.
 <tool_call>
 {"name": "get_balances", "arguments": {}}
@@ -106,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tool_call_with_arguments() {
+    fn test_parse_tool_call_with_arguments_json() {
         let text = r#"<tool_call>
 {"name": "bolt11_send", "arguments": {"invoice": "lnbc1234..."}}
 </tool_call>"#;
@@ -119,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_multiple_tool_calls() {
+    fn test_parse_multiple_tool_calls_json() {
         let text = r#"<tool_call>
 {"name": "get_node_info", "arguments": {}}
 </tool_call>
@@ -133,20 +185,72 @@ mod tests {
         assert_eq!(calls[1].name, "get_balances");
     }
 
+    // --- Qwen3.5 function-tag format tests ---
+
+    #[test]
+    fn test_parse_function_tag_no_args() {
+        let text = r#"I'll check your node status.
+<tool_call>
+<function=get_node_info>
+</function>
+</tool_call>"#;
+
+        let (calls, remaining) = parse_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "get_node_info");
+        assert_eq!(calls[0].arguments, serde_json::json!({}));
+        assert_eq!(remaining, "I'll check your node status.");
+    }
+
+    #[test]
+    fn test_parse_function_tag_with_args() {
+        let text = r#"<tool_call>
+<function=bolt11_send>{"invoice": "lnbc1234...", "amount_msat": 50000}
+</function>
+</tool_call>"#;
+
+        let (calls, remaining) = parse_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "bolt11_send");
+        assert_eq!(calls[0].arguments["invoice"], "lnbc1234...");
+        assert_eq!(calls[0].arguments["amount_msat"], 50000);
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn test_parse_function_tag_compact() {
+        // Some models output this on a single line
+        let text = "<tool_call><function=get_balances></function></tool_call>";
+
+        let (calls, remaining) = parse_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "get_balances");
+        assert_eq!(calls[0].arguments, serde_json::json!({}));
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn test_parse_multiple_function_tags() {
+        let text = r#"<tool_call>
+<function=get_node_info></function>
+</tool_call>
+<tool_call>
+<function=get_balances></function>
+</tool_call>"#;
+
+        let (calls, _) = parse_tool_calls(text);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "get_node_info");
+        assert_eq!(calls[1].name, "get_balances");
+    }
+
+    // --- General tests ---
+
     #[test]
     fn test_no_tool_calls() {
         let text = "Just a regular message with no tool calls.";
         let (calls, remaining) = parse_tool_calls(text);
         assert!(calls.is_empty());
         assert_eq!(remaining, text);
-    }
-
-    #[test]
-    fn test_has_pending_tool_call() {
-        assert!(has_pending_tool_call("some text <tool_call> partial"));
-        assert!(!has_pending_tool_call(
-            "some text <tool_call>...</tool_call>"
-        ));
-        assert!(!has_pending_tool_call("no tags here"));
     }
 }
