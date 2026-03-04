@@ -8,6 +8,7 @@
 const BOLD: &str = "\x1b[1m";
 const ITALIC: &str = "\x1b[3m";
 const UNDERLINE: &str = "\x1b[4m";
+const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 
 /// A line-buffering markdown renderer for streaming token output.
@@ -16,11 +17,15 @@ const RESET: &str = "\x1b[0m";
 /// fully rendered lines as soon as a newline is encountered.
 pub struct StreamRenderer {
     buf: String,
+    in_tool_call: bool,
 }
 
 impl StreamRenderer {
     pub fn new() -> Self {
-        Self { buf: String::new() }
+        Self {
+            buf: String::new(),
+            in_tool_call: false,
+        }
     }
 
     /// Accepts a token fragment. Whenever a complete line is found in the
@@ -32,8 +37,8 @@ impl StreamRenderer {
         while let Some(nl) = self.buf.find('\n') {
             let line: String = self.buf.drain(..=nl).collect();
             // line includes the trailing '\n'
-            let rendered = render_line(line.trim_end_matches('\n'));
-            emit(&rendered);
+            let trimmed = line.trim_end_matches('\n');
+            self.emit_line(trimmed, emit);
             emit("\n");
         }
     }
@@ -41,9 +46,30 @@ impl StreamRenderer {
     /// Flushes any remaining partial line (call at end of generation).
     pub fn flush(&mut self, emit: &mut dyn FnMut(&str)) {
         if !self.buf.is_empty() {
-            let rendered = render_line(&self.buf);
-            emit(&rendered);
-            self.buf.clear();
+            let line = std::mem::take(&mut self.buf);
+            self.emit_line(&line, emit);
+        }
+    }
+
+    fn emit_line(&mut self, line: &str, emit: &mut dyn FnMut(&str)) {
+        let trimmed = line.trim();
+
+        if trimmed.contains("<tool_call>") {
+            self.in_tool_call = true;
+            emit(&format!("{DIM}{line}{RESET}"));
+            return;
+        }
+
+        if trimmed.contains("</tool_call>") {
+            emit(&format!("{DIM}{line}{RESET}"));
+            self.in_tool_call = false;
+            return;
+        }
+
+        if self.in_tool_call {
+            emit(&format!("{DIM}{line}{RESET}"));
+        } else {
+            emit(&render_line(line));
         }
     }
 }
@@ -260,5 +286,34 @@ mod tests {
         renderer.flush(&mut |s| output.push_str(s));
         assert!(output.len() > before_flush.len());
         assert!(output.contains("trailing"));
+    }
+
+    #[test]
+    fn test_tool_call_rendered_dim() {
+        let mut renderer = StreamRenderer::new();
+        let mut output = String::new();
+
+        renderer.push("Here is some text\n", &mut |s| output.push_str(s));
+        assert!(!output.contains(DIM));
+
+        renderer.push("<tool_call>\n", &mut |s| output.push_str(s));
+        assert!(output.contains(DIM));
+
+        let before = output.clone();
+        renderer.push("{\"name\": \"get_balances\"}\n", &mut |s| {
+            output.push_str(s)
+        });
+        let new_part = &output[before.len()..];
+        assert!(
+            new_part.contains(DIM),
+            "content inside tool_call should be dim"
+        );
+
+        renderer.push("</tool_call>\n", &mut |s| output.push_str(s));
+        // After closing, new text should not be dim
+        let before = output.clone();
+        renderer.push("Normal again\n", &mut |s| output.push_str(s));
+        let new_part = &output[before.len()..];
+        assert!(!new_part.contains(DIM));
     }
 }
