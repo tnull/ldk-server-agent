@@ -213,12 +213,12 @@ pub async fn run_repl(
                     Ok(_response) => {
                         if let Some(ttft) = first_token_time {
                             eprintln!(
-                                "\n[{:.1}s total, {:.1}s to first token]",
+                                "\n{GREY}[{:.1}s total, {:.1}s to first token]{RESET}",
                                 total.as_secs_f32(),
                                 ttft.as_secs_f32()
                             );
                         } else {
-                            eprintln!("\n[{:.1}s total]", total.as_secs_f32());
+                            eprintln!("\n{GREY}[{:.1}s total]{RESET}", total.as_secs_f32());
                         }
                         println!();
                     }
