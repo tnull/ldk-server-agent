@@ -52,24 +52,36 @@ impl StreamRenderer {
     }
 
     fn emit_line(&mut self, line: &str, emit: &mut dyn FnMut(&str)) {
-        let trimmed = line.trim();
+        const OPEN: &str = "<tool_call>";
+        const CLOSE: &str = "</tool_call>";
 
-        if trimmed.contains("<tool_call>") {
-            self.in_tool_call = true;
-            emit(&format!("{DIM}{line}{RESET}"));
-            return;
-        }
+        let mut rest = line;
 
-        if trimmed.contains("</tool_call>") {
-            emit(&format!("{DIM}{line}{RESET}"));
-            self.in_tool_call = false;
-            return;
-        }
+        while !rest.is_empty() {
+            if self.in_tool_call {
+                if let Some(close_idx) = rest.find(CLOSE) {
+                    let end = close_idx + CLOSE.len();
+                    let tool_chunk = &rest[..end];
+                    emit(&format!("{DIM}{tool_chunk}{RESET}"));
+                    self.in_tool_call = false;
+                    rest = &rest[end..];
+                } else {
+                    emit(&format!("{DIM}{rest}{RESET}"));
+                    break;
+                }
+            } else if let Some(open_idx) = rest.find(OPEN) {
+                let before = &rest[..open_idx];
+                if !before.is_empty() {
+                    emit(&render_line(before));
+                }
 
-        if self.in_tool_call {
-            emit(&format!("{DIM}{line}{RESET}"));
-        } else {
-            emit(&render_line(line));
+                emit(&format!("{DIM}{OPEN}{RESET}"));
+                self.in_tool_call = true;
+                rest = &rest[open_idx + OPEN.len()..];
+            } else {
+                emit(&render_line(rest));
+                break;
+            }
         }
     }
 }
@@ -315,5 +327,24 @@ mod tests {
         renderer.push("Normal again\n", &mut |s| output.push_str(s));
         let new_part = &output[before.len()..];
         assert!(!new_part.contains(DIM));
+    }
+
+    #[test]
+    fn test_text_after_tool_call_closing_tag_same_line_not_dim() {
+        let mut renderer = StreamRenderer::new();
+        let mut output = String::new();
+
+        renderer.push("<tool_call>{\"name\":\"get_balances\"}", &mut |s| {
+            output.push_str(s)
+        });
+        renderer.push("</tool_call>Now plain text", &mut |s| output.push_str(s));
+        renderer.flush(&mut |s| output.push_str(s));
+
+        assert!(output.contains("Now plain text"));
+        assert!(output.contains("</tool_call>"));
+        assert!(
+            output.contains(&format!("{RESET}Now plain text")),
+            "text after </tool_call> should render outside dim styling"
+        );
     }
 }
