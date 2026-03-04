@@ -86,6 +86,10 @@ impl Conversation {
                 content: generated,
             });
 
+            // Keep tool-progress stderr updates from overwriting the assistant's
+            // streamed text when the model ended without a trailing newline.
+            on_token("\n");
+
             for call in &tool_calls {
                 let result = self.execute_tool_call(call, mcp, confirm_fn).await?;
                 self.messages.push(ChatMessage {
