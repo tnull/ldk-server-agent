@@ -79,7 +79,17 @@ from `tls.crt`).
 3. **Build and run:**
 
 ```bash
-cargo build --release
+# CPU-only (uses native SIMD: AVX-512, AVX2, etc.)
+GGML_NATIVE=ON cargo build --release
+
+# With Vulkan GPU acceleration (AMD, Intel)
+cargo build --release --features vulkan
+
+# With CUDA GPU acceleration (NVIDIA)
+cargo build --release --features cuda
+```
+
+```bash
 ./target/release/ldk-server-agent
 ```
 
@@ -139,15 +149,6 @@ Tools are classified by their side effects:
   `verify_signature`, `export_pathfinding_scores`
 - **Require confirmation (mutating):** All operations that send funds, open/close
   channels, change configuration, or connect/disconnect peers
-
-## Building Without LLM Support
-
-If you don't have the C++ toolchain, you can build without the LLM feature
-(useful for testing the MCP client):
-
-```bash
-cargo build --no-default-features
-```
 
 ## License
 

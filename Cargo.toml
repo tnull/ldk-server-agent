@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["llm"]
-llm = ["dep:llama-cpp-2", "dep:encoding_rs"]
+cuda = ["llama-cpp-2/cuda"]
+vulkan = ["llama-cpp-2/vulkan"]
 
 [dependencies]
 # LLM inference (GGUF models via llama.cpp)
-llama-cpp-2 = { version = "0.1", optional = true }
+llama-cpp-2 = "0.1"
 
 # Async runtime (for MCP child process I/O)
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "time"] }
@@ -25,7 +25,7 @@ rustyline = "15"
 toml = { version = "0.8", default-features = false, features = ["parse"] }
 
 # UTF-8 streaming decoder (used by llama-cpp-2 token_to_piece)
-encoding_rs = { version = "0.8", optional = true }
+encoding_rs = "0.8"
 
 # Error handling
 anyhow = "1"

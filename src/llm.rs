@@ -25,7 +25,6 @@ impl std::fmt::Display for ChatRole {
     }
 }
 
-#[cfg(feature = "llm")]
 mod engine {
     use std::io::Write;
     use std::num::NonZeroU32;
@@ -165,10 +164,11 @@ mod engine {
                 .map_err(|e| anyhow::anyhow!("Failed to tokenize prompt: {:?}", e))?;
 
             eprintln!(
-                "[LLM: {} tokens / {} context, {} messages]",
+                "[LLM: {} tokens / {} context, {} messages, stops: {:?}]",
                 tokens.len(),
                 self.context_size,
-                messages.len()
+                messages.len(),
+                result.additional_stops
             );
 
             if tokens.len() as u32 >= self.context_size {
@@ -293,35 +293,4 @@ mod engine {
     }
 }
 
-#[cfg(feature = "llm")]
 pub use engine::LlmEngine;
-
-#[cfg(not(feature = "llm"))]
-pub struct LlmEngine {
-    _private: (),
-}
-
-#[cfg(not(feature = "llm"))]
-impl LlmEngine {
-    pub fn load(
-        _model_path: &std::path::Path,
-        _lora_path: Option<&std::path::Path>,
-        _context_size: Option<u32>,
-        _gpu_layers: Option<u32>,
-        _threads: Option<u32>,
-    ) -> anyhow::Result<Self> {
-        anyhow::bail!(
-            "LLM support is not compiled. Rebuild with `--features llm` \
-			 (requires libclang-dev and cmake)."
-        )
-    }
-
-    pub fn generate(
-        &self,
-        _messages: &[ChatMessage],
-        _tools: &[crate::mcp::protocol::ToolDefinition],
-        _on_token: &mut dyn FnMut(&str),
-    ) -> anyhow::Result<String> {
-        anyhow::bail!("LLM support is not compiled.")
-    }
-}
