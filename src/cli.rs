@@ -36,10 +36,9 @@ fn term_width() -> usize {
 /// Draw the top border: `┌─ you ───...─┐`
 fn draw_box_top(width: usize, label: &str, solid: bool) -> String {
     let color = if solid { BRIGHT } else { GREY };
-    // "┌─ " (4 display cols) + label + " " (1) + "─...─┐" (remaining)
+    // "┌─ " (3 display cols) + label + " " (1) + "─...─┐" (remaining)
     let prefix = format!("┌─ {} ", label);
-    // prefix display width: 4 + label.len() + 1
-    let prefix_display = 4 + label.len() + 1;
+    let prefix_display = 3 + label.len() + 1;
     let suffix = "─┐";
     let suffix_display = 2;
     let fill = width.saturating_sub(prefix_display + suffix_display);
