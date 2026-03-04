@@ -27,6 +27,9 @@ toml = { version = "0.8", default-features = false, features = ["parse"] }
 # UTF-8 streaming decoder (used by llama-cpp-2 token_to_piece)
 encoding_rs = "0.8"
 
+# Terminal width detection
+libc = "0.2"
+
 # Error handling
 anyhow = "1"
 

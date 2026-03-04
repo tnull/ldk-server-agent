@@ -274,6 +274,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "encoding_rs",
+ "libc",
  "llama-cpp-2",
  "rustyline",
  "serde",
