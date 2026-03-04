@@ -138,7 +138,7 @@ impl Conversation {
             std::thread::sleep(std::time::Duration::from_millis(500));
             while !timer_stop_clone.load(Ordering::Relaxed) {
                 let elapsed = timer_start.elapsed().as_secs_f32();
-                eprint!("\r[tool: {} | {:.1}s] ", tool_name, elapsed);
+                eprint!("\r\x1b[90m[tool: {} | {:.1}s]\x1b[0m ", tool_name, elapsed);
                 let _ = std::io::stderr().flush();
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
@@ -168,7 +168,7 @@ impl Conversation {
 
         if result.is_error == Some(true) {
             eprintln!(
-                "[Tool {} returned error after {:.1}s: {}]",
+                "\x1b[90m[Tool {} returned error after {:.1}s: {}]\x1b[0m",
                 call.name,
                 elapsed.as_secs_f32(),
                 truncate_for_log(&text, 200)
@@ -176,7 +176,7 @@ impl Conversation {
             Ok(format!("Tool '{}' returned an error: {}", call.name, text))
         } else {
             eprintln!(
-                "[Tool {} completed in {:.1}s | response: {}]",
+                "\x1b[90m[Tool {} completed in {:.1}s | response: {}]\x1b[0m",
                 call.name,
                 elapsed.as_secs_f32(),
                 truncate_for_log(&text, 200)

@@ -122,34 +122,23 @@ pub async fn run_repl(
                 }
 
                 // Reprint the entire box in bright.
-                // Calculate how many terminal rows the input line occupies.
+                // After readline returns, cursor sits on the bottom border line.
                 let prompt_display_width = 2; // "│ "
                 let content_len = input.len() + prompt_display_width;
                 let input_rows = content_len.saturating_sub(1) / width + 1;
-                // +1 top border, +1 pre-drawn bottom border
-                let lines_up = input_rows + 2;
+                let lines_up = input_rows + 1; // input rows + top border
 
-                // Move up to top border and reprint in bright
+                // Move up to top border, reprint everything downward in bright.
                 print!(
-                    "\x1b[{}A\x1b[2K{}",
+                    "\x1b[{}A\r\x1b[2K{}",
                     lines_up,
                     draw_box_top(width, "you", true)
                 );
-                // Reprint input line in bright
                 let bright_prompt = box_prompt(true);
-                for _ in 0..input_rows {
-                    print!("\n\x1b[2K");
-                }
-                print!("\x1b[{}A", input_rows);
-                print!("\r\x1b[2K{}{}", bright_prompt, input);
-                for _ in 1..input_rows {
-                    print!("\n");
-                }
+                print!("\n\x1b[2K{}{}", bright_prompt, input);
                 println!();
-
-                // Reprint bottom border in bright (overwrite the grey one)
-                print!("\x1b[2K");
-                println!("{}", draw_box_bottom(width, true));
+                print!("\x1b[2K{}", draw_box_bottom(width, true));
+                println!();
 
                 let _ = std::io::stdout().flush();
 
@@ -184,7 +173,7 @@ pub async fn run_repl(
                             got_first_for_cb.store(true, Ordering::Relaxed);
                             *ftt = Some(start.elapsed());
                             eprint!("\r\x1b[2K");
-                            print!("assistant> ");
+                            print!("{BRIGHT}assistant>{RESET} ");
                         }
                         md.push(token, &mut |rendered| {
                             print!("{}", rendered);
