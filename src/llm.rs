@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
+
 /// A message in the conversation history.
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
@@ -25,10 +28,37 @@ impl std::fmt::Display for ChatRole {
     }
 }
 
+/// Live generation statistics shared between the LLM engine and the UI.
+///
+/// The engine populates the fields as generation progresses; the CLI timer
+/// thread reads them to display a consolidated status line.
+pub struct GenerationStats {
+    /// Number of prompt tokens (set before generation begins).
+    pub prompt_tokens: AtomicU32,
+    /// Context window size.
+    pub context_size: AtomicU32,
+    /// Number of messages in the conversation.
+    pub message_count: AtomicU32,
+    /// Number of tokens generated so far (updated during generation).
+    pub generated_tokens: AtomicU32,
+}
+
+impl GenerationStats {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            prompt_tokens: AtomicU32::new(0),
+            context_size: AtomicU32::new(0),
+            message_count: AtomicU32::new(0),
+            generated_tokens: AtomicU32::new(0),
+        })
+    }
+}
+
 mod engine {
     use std::io::Write;
     use std::num::NonZeroU32;
     use std::path::Path;
+    use std::sync::atomic::Ordering;
 
     use anyhow::{Context, bail};
     use llama_cpp_2::LogOptions;
@@ -130,11 +160,13 @@ mod engine {
         /// Generates a response given a conversation history and available tools.
         ///
         /// Calls `on_token` for each generated token fragment (for streaming output).
+        /// Populates `stats` with live generation metrics for the UI to display.
         /// Returns the complete generated text.
         pub fn generate(
             &self,
             messages: &[ChatMessage],
             tools: &[ToolDefinition],
+            stats: &super::GenerationStats,
             on_token: &mut dyn FnMut(&str),
         ) -> anyhow::Result<String> {
             let llama_messages = messages
@@ -163,15 +195,17 @@ mod engine {
                 .str_to_token(&result.prompt, AddBos::Always)
                 .map_err(|e| anyhow::anyhow!("Failed to tokenize prompt: {:?}", e))?;
 
-            // Print the status on the same line the timer is using (via \r)
-            // so it replaces the "processing …" text rather than pushing it
-            // onto a separate line that never gets cleaned up.
-            eprint!(
-                "\r\x1b[2K\x1b[90m[LLM: {} tokens / {} context, {} messages]\x1b[0m",
-                tokens.len(),
-                self.context_size,
-                messages.len(),
-            );
+            // Publish stats for the live status line in the CLI timer thread.
+            stats
+                .prompt_tokens
+                .store(tokens.len() as u32, Ordering::Relaxed);
+            stats
+                .context_size
+                .store(self.context_size, Ordering::Relaxed);
+            stats
+                .message_count
+                .store(messages.len() as u32, Ordering::Relaxed);
+            stats.generated_tokens.store(0, Ordering::Relaxed);
 
             if tokens.len() as u32 >= self.context_size {
                 bail!(
@@ -241,6 +275,7 @@ mod engine {
 
                 generated.push_str(&piece);
                 on_token(&piece);
+                stats.generated_tokens.fetch_add(1, Ordering::Relaxed);
 
                 // Check additional stop sequences from the template
                 if result

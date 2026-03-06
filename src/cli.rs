@@ -8,7 +8,7 @@ use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 
 use crate::conversation::Conversation;
-use crate::llm::LlmEngine;
+use crate::llm::{GenerationStats, LlmEngine};
 use crate::markdown::StreamRenderer;
 use crate::mcp::McpClient;
 
@@ -144,17 +144,33 @@ pub async fn run_repl(
 
                 let start = Instant::now();
                 let got_first_token = Arc::new(AtomicBool::new(false));
+                let stats = GenerationStats::new();
 
-                // Spawn a timer thread that shows elapsed seconds while waiting
+                // Spawn a timer thread that shows a live status line while
+                // the LLM is processing.  Once the first token arrives the
+                // status line is erased and streaming takes over.
                 let timer_stop = Arc::new(AtomicBool::new(false));
                 let timer_stop_clone = Arc::clone(&timer_stop);
                 let got_first_clone = Arc::clone(&got_first_token);
+                let stats_clone = Arc::clone(&stats);
                 let timer_start = start;
                 let timer_handle = std::thread::spawn(move || {
                     while !timer_stop_clone.load(Ordering::Relaxed) {
                         if !got_first_clone.load(Ordering::Relaxed) {
                             let elapsed = timer_start.elapsed().as_secs_f32();
-                            eprint!("\rassistant> [processing {:.1}s] ", elapsed);
+                            let prompt_tok = stats_clone.prompt_tokens.load(Ordering::Relaxed);
+                            let ctx = stats_clone.context_size.load(Ordering::Relaxed);
+                            let msgs = stats_clone.message_count.load(Ordering::Relaxed);
+                            let gen_tok = stats_clone.generated_tokens.load(Ordering::Relaxed);
+
+                            if prompt_tok > 0 {
+                                eprint!(
+                                    "\r\x1b[2K\x1b[90m[{:.1}s | {} prompt + {} generated tokens | {} ctx | {} messages]\x1b[0m",
+                                    elapsed, prompt_tok, gen_tok, ctx, msgs,
+                                );
+                            } else {
+                                eprint!("\r\x1b[2K\x1b[90m[{:.1}s | preparing...]\x1b[0m", elapsed,);
+                            }
                             let _ = std::io::stderr().flush();
                         }
                         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -201,6 +217,7 @@ pub async fn run_repl(
                             input,
                             &llm,
                             &mut mcp,
+                            &stats,
                             &mut on_token,
                             &mut on_round_complete,
                             &mut confirm_fn,

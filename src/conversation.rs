@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use anyhow::Context;
 
-use crate::llm::{ChatMessage, ChatRole, LlmEngine};
+use crate::llm::{ChatMessage, ChatRole, GenerationStats, LlmEngine};
 use crate::mcp::McpClient;
 use crate::mcp::protocol::ToolDefinition;
 use crate::prompt::build_system_prompt;
@@ -46,6 +46,7 @@ impl Conversation {
         user_input: &str,
         llm: &LlmEngine,
         mcp: &mut McpClient,
+        stats: &GenerationStats,
         on_token: &mut dyn FnMut(&str),
         on_round_complete: &mut dyn FnMut(),
         confirm_fn: &mut dyn FnMut(&str, &str, &serde_json::Value) -> bool,
@@ -67,7 +68,7 @@ impl Conversation {
             }
 
             let generated = llm
-                .generate(&self.messages, &self.tools, on_token)
+                .generate(&self.messages, &self.tools, stats, on_token)
                 .context("LLM generation failed")?;
 
             let (tool_calls, text) = tool_call::parse_tool_calls(&generated);
@@ -107,7 +108,7 @@ impl Conversation {
         // If we exhausted tool rounds, do one final generation without checking
         // for tool calls
         let final_response = llm
-            .generate(&self.messages, &self.tools, on_token)
+            .generate(&self.messages, &self.tools, stats, on_token)
             .context("Final LLM generation failed")?;
         self.messages.push(ChatMessage {
             role: ChatRole::Assistant,
