@@ -74,13 +74,14 @@ mod engine {
     use crate::mcp::protocol::ToolDefinition;
 
     const DEFAULT_CONTEXT_SIZE: u32 = 8192;
-    const DEFAULT_MAX_GENERATION_TOKENS: i32 = 2048;
+    const DEFAULT_MAX_GENERATION_TOKENS: u32 = 4096;
 
     pub struct LlmEngine {
         backend: LlamaBackend,
         model: LlamaModel,
         template: LlamaChatTemplate,
         context_size: u32,
+        max_generation_tokens: u32,
         threads: i32,
     }
 
@@ -90,6 +91,7 @@ mod engine {
             model_path: &Path,
             lora_path: Option<&Path>,
             context_size: Option<u32>,
+            max_generation_tokens: Option<u32>,
             gpu_layers: Option<u32>,
             threads: Option<u32>,
         ) -> anyhow::Result<Self> {
@@ -111,6 +113,7 @@ mod engine {
             });
 
             let ctx_size = context_size.unwrap_or(DEFAULT_CONTEXT_SIZE);
+            let max_gen = max_generation_tokens.unwrap_or(DEFAULT_MAX_GENERATION_TOKENS);
             let n_threads = threads.unwrap_or_else(|| {
                 std::thread::available_parallelism()
                     .map(|p| p.get() as u32)
@@ -122,6 +125,7 @@ mod engine {
                 model,
                 template,
                 context_size: ctx_size,
+                max_generation_tokens: max_gen,
                 threads: n_threads,
             };
 
@@ -254,11 +258,16 @@ mod engine {
                 LlamaSampler::dist(42),
             ]);
 
-            // Generate tokens
+            // Generate tokens.
+            // Cap at the configured max *and* the remaining context window,
+            // whichever is smaller, so we never exceed the KV cache.
             let mut n_cur = batch.n_tokens();
-            let max_tokens = n_cur + DEFAULT_MAX_GENERATION_TOKENS;
+            let remaining_ctx = (n_ctx as i32 - n_cur).max(0) as u32;
+            let gen_budget = self.max_generation_tokens.min(remaining_ctx);
+            let max_tokens = n_cur + gen_budget as i32;
             let mut decoder = encoding_rs::UTF_8.new_decoder();
             let mut generated = String::new();
+            let mut hit_limit = false;
 
             while n_cur <= max_tokens {
                 let token = sampler.sample(&ctx, batch.n_tokens() - 1);
@@ -301,6 +310,18 @@ mod engine {
 
                 ctx.decode(&mut batch)
                     .map_err(|e| anyhow::anyhow!("Failed to decode generated token: {:?}", e))?;
+
+                if n_cur > max_tokens {
+                    hit_limit = true;
+                }
+            }
+
+            if hit_limit {
+                eprintln!(
+                    "\n\x1b[33m[Warning: generation truncated after {} tokens \
+                     (limit: {}, remaining context: {})]\x1b[0m",
+                    gen_budget, self.max_generation_tokens, remaining_ctx,
+                );
             }
 
             // Flush stdout so streamed output is visible

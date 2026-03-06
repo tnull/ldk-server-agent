@@ -60,6 +60,7 @@ async fn main() {
         &config.model.model_path,
         config.model.lora_path.as_deref(),
         config.model.context_size,
+        config.model.max_generation_tokens,
         config.model.gpu_layers,
         config.model.threads,
     ) {

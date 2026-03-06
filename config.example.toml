@@ -8,6 +8,10 @@ model_path = "/path/to/qwen3-8b-q4_k_m.gguf"
 # Number of context tokens (default: 8192)
 # context_size = 8192
 
+# Maximum tokens to generate per LLM turn (default: 4096).
+# Increase if the model's responses are being cut off mid-sentence.
+# max_generation_tokens = 4096
+
 # Number of GPU layers to offload (default: 0 for CPU-only)
 # gpu_layers = 0
 

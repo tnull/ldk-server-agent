@@ -17,6 +17,8 @@ pub struct ModelConfig {
     pub lora_path: Option<PathBuf>,
     /// Number of context tokens (default: 8192).
     pub context_size: Option<u32>,
+    /// Maximum number of tokens to generate per LLM turn (default: 4096).
+    pub max_generation_tokens: Option<u32>,
     /// Number of GPU layers to offload (default: 0 for CPU-only).
     pub gpu_layers: Option<u32>,
     /// Number of threads for inference (default: number of physical cores).
