@@ -15,6 +15,15 @@ use crate::tool_call::{self, ToolCall};
 /// Maximum number of tool-call round trips before forcing a text response.
 const MAX_TOOL_ROUNDS: usize = 10;
 
+/// Maximum character length for a single tool result before it is truncated.
+///
+/// Large JSON responses (e.g. full channel lists, network graph dumps) can
+/// easily consume 10k+ tokens of context, leaving little room for the model
+/// to actually reason and respond.  Roughly 1 token ≈ 4 chars, so 8000
+/// chars ≈ 2000 tokens — enough to convey the key data while leaving ample
+/// generation budget.
+const MAX_TOOL_RESULT_CHARS: usize = 8000;
+
 /// Manages the conversation state and orchestrates tool-use loops.
 pub struct Conversation {
     messages: Vec<ChatMessage>,
@@ -96,6 +105,7 @@ impl Conversation {
 
             for call in &tool_calls {
                 let result = self.execute_tool_call(call, mcp, confirm_fn).await?;
+                let result = truncate_tool_result(&result);
                 self.messages.push(ChatMessage {
                     role: ChatRole::Tool,
                     content: result,
@@ -201,12 +211,31 @@ impl Conversation {
     }
 }
 
+/// Truncates a tool result that would otherwise consume too much context.
+///
+/// Preserves valid UTF-8 by finding the nearest char boundary.
+fn truncate_tool_result(s: &str) -> String {
+    if s.len() <= MAX_TOOL_RESULT_CHARS {
+        return s.to_string();
+    }
+
+    // Find a clean UTF-8 boundary at or before the limit.
+    let boundary = s.floor_char_boundary(MAX_TOOL_RESULT_CHARS);
+    format!(
+        "{}\n... [truncated — {} chars of {} total]",
+        &s[..boundary],
+        boundary,
+        s.len()
+    )
+}
+
 /// Truncates a string for log output, adding "..." if trimmed.
 fn truncate_for_log(s: &str, max_len: usize) -> String {
     let s = s.replace('\n', " ");
     if s.len() <= max_len {
         s
     } else {
-        format!("{}...", &s[..max_len])
+        let boundary = s.floor_char_boundary(max_len);
+        format!("{}...", &s[..boundary])
     }
 }
