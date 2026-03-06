@@ -163,12 +163,14 @@ mod engine {
                 .str_to_token(&result.prompt, AddBos::Always)
                 .map_err(|e| anyhow::anyhow!("Failed to tokenize prompt: {:?}", e))?;
 
-            eprintln!(
-                "\x1b[90m[LLM: {} tokens / {} context, {} messages, stops: {:?}]\x1b[0m",
+            // Print the status on the same line the timer is using (via \r)
+            // so it replaces the "processing …" text rather than pushing it
+            // onto a separate line that never gets cleaned up.
+            eprint!(
+                "\r\x1b[2K\x1b[90m[LLM: {} tokens / {} context, {} messages]\x1b[0m",
                 tokens.len(),
                 self.context_size,
                 messages.len(),
-                result.additional_stops
             );
 
             if tokens.len() as u32 >= self.context_size {
