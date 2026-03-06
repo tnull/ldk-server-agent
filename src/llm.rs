@@ -136,6 +136,11 @@ mod engine {
             Ok(engine)
         }
 
+        /// Returns the configured context window size in tokens.
+        pub fn context_size(&self) -> u32 {
+            self.context_size
+        }
+
         fn load_lora(&mut self, lora_path: &Path) -> anyhow::Result<()> {
             eprintln!("Loading LoRA adapter from: {}", lora_path.display());
 

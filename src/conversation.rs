@@ -15,31 +15,49 @@ use crate::tool_call::{self, ToolCall};
 /// Maximum number of tool-call round trips before forcing a text response.
 const MAX_TOOL_ROUNDS: usize = 10;
 
-/// Maximum character length for a single tool result before it is truncated.
+/// Fraction of the context window (in characters, assuming ~4 chars/token)
+/// that a single tool result is allowed to occupy.
 ///
-/// Large JSON responses (e.g. full channel lists, network graph dumps) can
-/// easily consume 10k+ tokens of context, leaving little room for the model
-/// to actually reason and respond.  Roughly 1 token ≈ 4 chars, so 8000
-/// chars ≈ 2000 tokens — enough to convey the key data while leaving ample
-/// generation budget.
-const MAX_TOOL_RESULT_CHARS: usize = 8000;
+/// `context_size / 16` means each tool result gets at most 1/16th of the
+/// context window.  With up to ~8 tool results, the system prompt, user
+/// messages, assistant messages, and generation budget all still fit
+/// comfortably.
+///
+/// Examples at different context sizes:
+///   32k ctx  →  ~8 000 chars  (~2 000 tokens) per tool result
+///   65k ctx  →  ~16 000 chars (~4 000 tokens) per tool result
+///  128k ctx  →  ~32 000 chars (~8 000 tokens) per tool result
+const TOOL_RESULT_CONTEXT_DIVISOR: u32 = 4;
 
 /// Manages the conversation state and orchestrates tool-use loops.
 pub struct Conversation {
     messages: Vec<ChatMessage>,
     tools: Vec<ToolDefinition>,
+    /// Maximum character length for a single tool result before truncation.
+    max_tool_result_chars: usize,
 }
 
 impl Conversation {
     /// Creates a new conversation with the system prompt built from
     /// the given tool definitions.
-    pub fn new(tools: Vec<ToolDefinition>) -> Self {
+    ///
+    /// `context_size` is used to derive the per-tool-result truncation
+    /// limit so that it scales with the available context window.
+    pub fn new(tools: Vec<ToolDefinition>, context_size: u32) -> Self {
         let system_prompt = build_system_prompt(&tools);
         let messages = vec![ChatMessage {
             role: ChatRole::System,
             content: system_prompt,
         }];
-        Self { messages, tools }
+        // ~4 chars per token, so context_size / DIVISOR tokens ≈
+        // context_size * 4 / DIVISOR chars.
+        let max_tool_result_chars =
+            (context_size as usize * 4) / TOOL_RESULT_CONTEXT_DIVISOR as usize;
+        Self {
+            messages,
+            tools,
+            max_tool_result_chars,
+        }
     }
 
     /// Processes a user message through the full tool-use loop:
@@ -105,7 +123,7 @@ impl Conversation {
 
             for call in &tool_calls {
                 let result = self.execute_tool_call(call, mcp, confirm_fn).await?;
-                let result = truncate_tool_result(&result);
+                let result = truncate_tool_result(&result, self.max_tool_result_chars);
                 self.messages.push(ChatMessage {
                     role: ChatRole::Tool,
                     content: result,
@@ -214,13 +232,13 @@ impl Conversation {
 /// Truncates a tool result that would otherwise consume too much context.
 ///
 /// Preserves valid UTF-8 by finding the nearest char boundary.
-fn truncate_tool_result(s: &str) -> String {
-    if s.len() <= MAX_TOOL_RESULT_CHARS {
+fn truncate_tool_result(s: &str, max_chars: usize) -> String {
+    if s.len() <= max_chars {
         return s.to_string();
     }
 
     // Find a clean UTF-8 boundary at or before the limit.
-    let boundary = s.floor_char_boundary(MAX_TOOL_RESULT_CHARS);
+    let boundary = s.floor_char_boundary(max_chars);
     format!(
         "{}\n... [truncated — {} chars of {} total]",
         &s[..boundary],

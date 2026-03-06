@@ -73,7 +73,7 @@ async fn main() {
 
     eprintln!("LLM loaded successfully.\n");
 
-    let conversation = Conversation::new(mcp.tools().to_vec());
+    let conversation = Conversation::new(mcp.tools().to_vec(), llm.context_size());
 
     if let Err(e) = cli::run_repl(llm, mcp, conversation).await {
         eprintln!("Fatal error: {}", e);
