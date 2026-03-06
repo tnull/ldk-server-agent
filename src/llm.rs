@@ -74,7 +74,7 @@ mod engine {
     use crate::mcp::protocol::ToolDefinition;
 
     const DEFAULT_CONTEXT_SIZE: u32 = 8192;
-    const DEFAULT_MAX_GENERATION_TOKENS: u32 = 4096;
+    const DEFAULT_MAX_GENERATION_TOKENS: u32 = 8192;
 
     pub struct LlmEngine {
         backend: LlamaBackend,
