@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -11,6 +10,7 @@ use crate::mcp::protocol::ToolDefinition;
 use crate::prompt::build_system_prompt;
 use crate::safety::{self, ToolSafety};
 use crate::tool_call::{self, ToolCall};
+use crate::ui::UserInterface;
 
 /// Maximum number of tool-call round trips before forcing a text response.
 const MAX_TOOL_ROUNDS: usize = 10;
@@ -77,6 +77,7 @@ impl Conversation {
         on_token: &mut dyn FnMut(&str),
         on_round_complete: &mut dyn FnMut(),
         confirm_fn: &mut dyn FnMut(&str, &str, &serde_json::Value) -> bool,
+        ui: &Arc<dyn UserInterface>,
     ) -> anyhow::Result<String> {
         self.messages.push(ChatMessage {
             role: ChatRole::User,
@@ -87,15 +88,15 @@ impl Conversation {
 
         loop {
             if rounds >= MAX_TOOL_ROUNDS {
-                eprintln!(
-                    "\n[Warning: reached maximum tool call rounds ({}), forcing response]",
+                ui.show_warning(&format!(
+                    "reached maximum tool call rounds ({}), forcing response",
                     MAX_TOOL_ROUNDS
-                );
+                ));
                 break;
             }
 
             let generated = llm
-                .generate(&self.messages, &self.tools, stats, on_token)
+                .generate(&self.messages, &self.tools, stats, on_token, ui.as_ref())
                 .context("LLM generation failed")?;
 
             let (tool_calls, text) = tool_call::parse_tool_calls(&generated);
@@ -122,7 +123,9 @@ impl Conversation {
             on_round_complete();
 
             for call in &tool_calls {
-                let result = self.execute_tool_call(call, mcp, confirm_fn).await?;
+                let result = self
+                    .execute_tool_call(call, mcp, confirm_fn, &Arc::clone(ui))
+                    .await?;
                 let result = truncate_tool_result(&result, self.max_tool_result_chars);
                 self.messages.push(ChatMessage {
                     role: ChatRole::Tool,
@@ -136,7 +139,7 @@ impl Conversation {
         // If we exhausted tool rounds, do one final generation without checking
         // for tool calls
         let final_response = llm
-            .generate(&self.messages, &self.tools, stats, on_token)
+            .generate(&self.messages, &self.tools, stats, on_token, ui.as_ref())
             .context("Final LLM generation failed")?;
         self.messages.push(ChatMessage {
             role: ChatRole::Assistant,
@@ -151,6 +154,7 @@ impl Conversation {
         call: &ToolCall,
         mcp: &mut McpClient,
         confirm_fn: &mut dyn FnMut(&str, &str, &serde_json::Value) -> bool,
+        ui: &Arc<dyn UserInterface>,
     ) -> anyhow::Result<String> {
         let safety = safety::classify_tool(&call.name);
 
@@ -169,13 +173,13 @@ impl Conversation {
         let timer_stop = Arc::new(AtomicBool::new(false));
         let timer_stop_clone = Arc::clone(&timer_stop);
         let timer_start = Instant::now();
+        let timer_ui = Arc::clone(ui);
         let timer_handle = std::thread::spawn(move || {
             // Wait a moment before showing the timer so quick calls don't flicker
             std::thread::sleep(std::time::Duration::from_millis(500));
             while !timer_stop_clone.load(Ordering::Relaxed) {
-                let elapsed = timer_start.elapsed().as_secs_f32();
-                eprint!("\r\x1b[90m[tool: {} | {:.1}s]\x1b[0m ", tool_name, elapsed);
-                let _ = std::io::stderr().flush();
+                let elapsed = timer_start.elapsed();
+                timer_ui.show_tool_progress(&tool_name, elapsed);
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
         });
@@ -191,7 +195,7 @@ impl Conversation {
         let elapsed = timer_start.elapsed();
 
         // Clear the timer line
-        eprint!("\r\x1b[2K");
+        ui.clear_tool_progress();
 
         let result = result?;
 
@@ -203,20 +207,10 @@ impl Conversation {
             .join("\n");
 
         if result.is_error == Some(true) {
-            eprintln!(
-                "\x1b[90m[Tool {} returned error after {:.1}s: {}]\x1b[0m",
-                call.name,
-                elapsed.as_secs_f32(),
-                truncate_for_log(&text, 200)
-            );
+            ui.show_tool_result(&call.name, elapsed, &truncate_for_log(&text, 200), true);
             Ok(format!("Tool '{}' returned an error: {}", call.name, text))
         } else {
-            eprintln!(
-                "\x1b[90m[Tool {} completed in {:.1}s | response: {}]\x1b[0m",
-                call.name,
-                elapsed.as_secs_f32(),
-                truncate_for_log(&text, 200)
-            );
+            ui.show_tool_result(&call.name, elapsed, &truncate_for_log(&text, 200), false);
             Ok(text)
         }
     }

@@ -1,5 +1,5 @@
-use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 
 /// A message in the conversation history.
 #[derive(Debug, Clone)]
@@ -55,23 +55,23 @@ impl GenerationStats {
 }
 
 mod engine {
-    use std::io::Write;
     use std::num::NonZeroU32;
     use std::path::Path;
     use std::sync::atomic::Ordering;
 
-    use anyhow::{bail, Context};
-    use llama_cpp_2::context::params::{KvCacheType, LlamaContextParams};
+    use anyhow::{Context, bail};
+    use llama_cpp_2::LogOptions;
     use llama_cpp_2::context::LlamaContext;
+    use llama_cpp_2::context::params::{KvCacheType, LlamaContextParams};
     use llama_cpp_2::llama_backend::LlamaBackend;
     use llama_cpp_2::llama_batch::LlamaBatch;
     use llama_cpp_2::model::params::LlamaModelParams;
     use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel};
     use llama_cpp_2::sampling::LlamaSampler;
-    use llama_cpp_2::LogOptions;
 
     use super::ChatMessage;
     use crate::mcp::protocol::ToolDefinition;
+    use crate::ui::UserInterface;
 
     const DEFAULT_CONTEXT_SIZE: u32 = 8192;
     const DEFAULT_MAX_GENERATION_TOKENS: u32 = 8192;
@@ -177,6 +177,7 @@ mod engine {
             tools: &[ToolDefinition],
             stats: &super::GenerationStats,
             on_token: &mut dyn FnMut(&str),
+            ui: &dyn UserInterface,
         ) -> anyhow::Result<String> {
             let llama_messages = messages
                 .iter()
@@ -321,15 +322,12 @@ mod engine {
 
             let generated_count = (n_cur - prompt_len) as u32;
             if !stopped_naturally {
-                eprintln!(
-                    "\n\x1b[33m[Warning: generation truncated after {} tokens \
-                     (max_generation_tokens: {}, remaining context: {})]\x1b[0m",
+                ui.show_warning(&format!(
+                    "generation truncated after {} tokens \
+                     (max_generation_tokens: {}, remaining context: {})",
                     generated_count, self.max_generation_tokens, remaining_ctx,
-                );
+                ));
             }
-
-            // Flush stdout so streamed output is visible
-            let _ = std::io::stdout().flush();
 
             Ok(generated)
         }

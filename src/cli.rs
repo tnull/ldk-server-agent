@@ -1,178 +1,75 @@
-use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
-
-use anyhow::Context;
-use rustyline::DefaultEditor;
-use rustyline::error::ReadlineError;
 
 use crate::conversation::Conversation;
 use crate::llm::{GenerationStats, LlmEngine};
 use crate::markdown::StreamRenderer;
 use crate::mcp::McpClient;
-
-const HISTORY_FILE: &str = ".ldk-agent-history";
-
-// ANSI color constants.
-const GREY: &str = "\x1b[90m";
-const BRIGHT: &str = "\x1b[97m";
-const RESET: &str = "\x1b[0m";
-
-/// Returns the terminal width in columns, or 80 as a fallback.
-fn term_width() -> usize {
-    #[cfg(unix)]
-    {
-        unsafe {
-            let mut ws: libc::winsize = std::mem::zeroed();
-            if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 0 {
-                return ws.ws_col as usize;
-            }
-        }
-    }
-    80
-}
-
-/// Draw the top border: `┌─ you ───...─┐`
-fn draw_box_top(width: usize, label: &str, solid: bool) -> String {
-    let color = if solid { BRIGHT } else { GREY };
-    // "┌─ " (3 display cols) + label + " " (1) + "─...─┐" (remaining)
-    let prefix = format!("┌─ {} ", label);
-    let prefix_display = 3 + label.len() + 1;
-    let suffix = "─┐";
-    let suffix_display = 2;
-    let fill = width.saturating_sub(prefix_display + suffix_display);
-    format!("{}{}{}{}{}", color, prefix, "─".repeat(fill), suffix, RESET,)
-}
-
-/// Draw the bottom border: `└───...───┘`
-fn draw_box_bottom(width: usize, solid: bool) -> String {
-    let color = if solid { BRIGHT } else { GREY };
-    // "└" (1) + "─...─" (fill) + "┘" (1) = width
-    let fill = width.saturating_sub(2);
-    format!("{}└{}┘{}", color, "─".repeat(fill), RESET)
-}
-
-/// Return the colored left-border prompt for rustyline: `│ `
-fn box_prompt(solid: bool) -> String {
-    let color = if solid { BRIGHT } else { GREY };
-    format!("{}│{} ", color, RESET)
-}
+use crate::ui::{InputAction, UserInterface};
 
 /// Runs the interactive REPL loop.
 pub async fn run_repl(
     llm: LlmEngine,
     mut mcp: McpClient,
     mut conversation: Conversation,
+    ui: Arc<dyn UserInterface>,
 ) -> anyhow::Result<()> {
-    let mut rl = DefaultEditor::new().context("Failed to initialize readline")?;
-
-    let history_path = dirs_path()
-        .map(|p| p.join(HISTORY_FILE))
-        .unwrap_or_else(|| HISTORY_FILE.into());
-
-    let _ = rl.load_history(&history_path);
-
-    println!("Lightning Node Assistant");
-    println!(
-        "Type your questions about your Lightning node. Type /quit to exit, /clear to reset.\n"
-    );
-
-    const BOTTOM_PADDING: usize = 1;
+    ui.display_banner();
 
     loop {
-        let width = term_width();
+        let action = ui.read_user_input();
 
-        // Reserve vertical space so the input box floats above the terminal bottom.
-        // The box is 3 lines: top border + input + bottom border.
-        let reserve = BOTTOM_PADDING + 3;
-        print!("{}\x1b[{}A", "\n".repeat(reserve), reserve);
-        let _ = std::io::stdout().flush();
-
-        // Print the grey box frame (top, empty input line, bottom), then
-        // cursor back up to the input line so readline types inside the box.
-        println!("{}", draw_box_top(width, "you", false));
-        println!("{}", box_prompt(false));
-        print!("{}", draw_box_bottom(width, false));
-        // Move cursor up to the input line, position after the "│ " prompt.
-        print!("\x1b[1A\r");
-        let _ = std::io::stdout().flush();
-        let prompt = box_prompt(false);
-
-        let readline = rl.readline(&prompt);
-        match readline {
-            Ok(line) => {
-                let input = line.trim();
-                if input.is_empty() {
-                    // Erase the full box (top + input + bottom = 3 lines).
-                    print!("\x1b[1A\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2K");
-                    let _ = std::io::stdout().flush();
-                    continue;
-                }
-
-                let _ = rl.add_history_entry(input);
-
+        match action {
+            InputAction::Empty => continue,
+            InputAction::Interrupt => continue,
+            InputAction::Eof => break,
+            InputAction::Error(err) => {
+                ui.show_error(&format!("Readline error: {}", err));
+                break;
+            }
+            InputAction::Message(input) => {
                 if input.starts_with('/') {
-                    // Bottom border is already drawn; just move past it.
-                    println!();
-                    match handle_command(input, &mut conversation) {
+                    match handle_command(&input, &mut conversation, &*ui) {
                         CommandResult::Continue => continue,
                         CommandResult::Quit => break,
                     }
                 }
 
-                // Reprint the entire box in bright.
-                // After readline returns, cursor sits on the bottom border line.
-                let prompt_display_width = 2; // "│ "
-                let content_len = input.len() + prompt_display_width;
-                let input_rows = content_len.saturating_sub(1) / width + 1;
-                let lines_up = input_rows + 1; // input rows + top border
-
-                // Move up to top border, reprint everything downward in bright.
-                print!(
-                    "\x1b[{}A\r\x1b[2K{}",
-                    lines_up,
-                    draw_box_top(width, "you", true)
-                );
-                let bright_prompt = box_prompt(true);
-                print!("\n\x1b[2K{}{}", bright_prompt, input);
-                println!();
-                print!("\x1b[2K{}", draw_box_bottom(width, true));
-                println!();
-
-                let _ = std::io::stdout().flush();
+                ui.confirm_user_input(&input);
 
                 let start = Instant::now();
                 let got_first_token = Arc::new(AtomicBool::new(false));
                 let stats = GenerationStats::new();
 
-                // Spawn a timer thread that shows a live status line while
-                // the LLM is processing.  Once the first token arrives the
-                // status line is erased and streaming takes over.
+                // Spawn a timer thread that shows a live status line.
+                // Before the first token it overwrites the current line;
+                // once streaming begins it renders below the cursor.
                 let timer_stop = Arc::new(AtomicBool::new(false));
+                let timer_ui = Arc::clone(&ui);
                 let timer_stop_clone = Arc::clone(&timer_stop);
                 let got_first_clone = Arc::clone(&got_first_token);
                 let stats_clone = Arc::clone(&stats);
                 let timer_start = start;
                 let timer_handle = std::thread::spawn(move || {
                     while !timer_stop_clone.load(Ordering::Relaxed) {
-                        if !got_first_clone.load(Ordering::Relaxed) {
-                            let elapsed = timer_start.elapsed().as_secs_f32();
-                            let prompt_tok = stats_clone.prompt_tokens.load(Ordering::Relaxed);
-                            let ctx = stats_clone.context_size.load(Ordering::Relaxed);
-                            let msgs = stats_clone.message_count.load(Ordering::Relaxed);
-                            let gen_tok = stats_clone.generated_tokens.load(Ordering::Relaxed);
+                        let elapsed = timer_start.elapsed().as_secs_f32();
+                        let prompt_tok = stats_clone.prompt_tokens.load(Ordering::Relaxed);
+                        let ctx = stats_clone.context_size.load(Ordering::Relaxed);
+                        let msgs = stats_clone.message_count.load(Ordering::Relaxed);
+                        let gen_tok = stats_clone.generated_tokens.load(Ordering::Relaxed);
 
-                            if prompt_tok > 0 {
-                                eprint!(
-                                    "\r\x1b[2K\x1b[90m[{:.1}s | {} prompt + {} generated tokens | {} ctx | {} messages]\x1b[0m",
-                                    elapsed, prompt_tok, gen_tok, ctx, msgs,
-                                );
-                            } else {
-                                eprint!("\r\x1b[2K\x1b[90m[{:.1}s | preparing...]\x1b[0m", elapsed,);
-                            }
-                            let _ = std::io::stderr().flush();
-                        }
+                        let status = if prompt_tok > 0 {
+                            format!(
+                                "[{:.1}s | {} prompt + {} generated tokens | {} ctx | {} messages]",
+                                elapsed, prompt_tok, gen_tok, ctx, msgs,
+                            )
+                        } else {
+                            format!("[{:.1}s | preparing...]", elapsed)
+                        };
+
+                        let below = got_first_clone.load(Ordering::Relaxed);
+                        timer_ui.update_status(&status, below);
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     }
                 });
@@ -185,16 +82,15 @@ pub async fn run_repl(
                     let md = &md_renderer;
                     let ftt = &mut first_token_time;
                     let got_first_ref = &got_first_for_cb;
+                    let ui_ref = &ui;
                     let mut on_token = |token: &str| {
                         if !got_first_ref.load(Ordering::Relaxed) {
                             got_first_ref.store(true, Ordering::Relaxed);
                             *ftt = Some(start.elapsed());
-                            eprint!("\r\x1b[2K");
-                            print!("{BRIGHT}assistant>{RESET} ");
+                            ui_ref.begin_assistant_response();
                         }
                         md.borrow_mut().push(token, &mut |rendered| {
-                            print!("{}", rendered);
-                            let _ = std::io::stdout().flush();
+                            ui_ref.stream_assistant_token(rendered);
                         });
                     };
 
@@ -202,80 +98,63 @@ pub async fn run_repl(
                         md_renderer
                             .borrow_mut()
                             .reset_tool_call_state(&mut |rendered| {
-                                print!("{}", rendered);
-                                let _ = std::io::stdout().flush();
+                                ui.stream_assistant_token(rendered);
                             });
                     };
 
                     let mut confirm_fn =
                         |_name: &str, description: &str, _args: &serde_json::Value| -> bool {
-                            confirm_action(description)
+                            ui.confirm_action(description)
                         };
 
                     conversation
                         .send_message(
-                            input,
+                            &input,
                             &llm,
                             &mut mcp,
                             &stats,
                             &mut on_token,
                             &mut on_round_complete,
                             &mut confirm_fn,
+                            &ui,
                         )
                         .await
                 };
 
                 // Flush any remaining partial line from the renderer.
                 md_renderer.borrow_mut().flush(&mut |rendered| {
-                    print!("{}", rendered);
-                    let _ = std::io::stdout().flush();
+                    ui.stream_assistant_token(rendered);
                 });
 
-                // Stop the timer thread
+                ui.end_assistant_response();
+
+                // Stop the timer thread and clear the status line.
                 timer_stop.store(true, Ordering::Relaxed);
                 let _ = timer_handle.join();
+                if got_first_token.load(Ordering::Relaxed) {
+                    ui.clear_status();
+                }
 
                 let total = start.elapsed();
                 match result {
                     Ok(_response) => {
-                        if let Some(ttft) = first_token_time {
-                            eprintln!(
-                                "\n{GREY}[{:.1}s total, {:.1}s to first token]{RESET}",
-                                total.as_secs_f32(),
-                                ttft.as_secs_f32()
-                            );
-                        } else {
-                            eprintln!("\n{GREY}[{:.1}s total]{RESET}", total.as_secs_f32());
-                        }
-                        println!();
+                        ui.show_timing(total, first_token_time);
                     }
                     Err(e) => {
-                        eprint!("\r\x1b[2K");
-                        eprintln!("[Error after {:.1}s: {:#}]\n", total.as_secs_f32(), e);
+                        ui.show_error(&format!(
+                            "[Error after {:.1}s: {:#}]\n",
+                            total.as_secs_f32(),
+                            e
+                        ));
                     }
                 }
-            }
-            Err(ReadlineError::Interrupted) => {
-                // Ctrl-C: bottom border already drawn, just move past it.
-                println!();
-                continue;
-            }
-            Err(ReadlineError::Eof) => {
-                // Ctrl-D: bottom border already drawn, just move past it.
-                println!();
-                break;
-            }
-            Err(err) => {
-                eprintln!("Readline error: {}", err);
-                break;
             }
         }
     }
 
-    let _ = rl.save_history(&history_path);
+    ui.goodbye();
     let _ = mcp.shutdown().await;
 
-    println!("Goodbye.");
     Ok(())
 }
 
@@ -284,46 +163,272 @@ enum CommandResult {
     Quit,
 }
 
-fn handle_command(input: &str, conversation: &mut Conversation) -> CommandResult {
+/// Handles a slash-command, returning whether the REPL should continue or quit.
+fn handle_command(
+    input: &str,
+    conversation: &mut Conversation,
+    ui: &dyn UserInterface,
+) -> CommandResult {
     match input {
         "/quit" | "/exit" | "/q" => CommandResult::Quit,
         "/clear" | "/reset" => {
             conversation.clear();
-            println!("[Conversation cleared]\n");
+            ui.show_command_output("[Conversation cleared]\n");
             CommandResult::Continue
         }
         "/help" => {
-            println!("Commands:");
-            println!("  /quit, /exit, /q  - Exit the assistant");
-            println!("  /clear, /reset    - Clear conversation history");
-            println!("  /help             - Show this help message");
-            println!();
+            ui.show_command_output("Commands:");
+            ui.show_command_output("  /quit, /exit, /q  - Exit the assistant");
+            ui.show_command_output("  /clear, /reset    - Clear conversation history");
+            ui.show_command_output("  /help             - Show this help message");
+            ui.show_command_output("");
             CommandResult::Continue
         }
         _ => {
-            println!(
+            ui.show_command_output(&format!(
                 "[Unknown command: {}. Type /help for available commands.]\n",
                 input
-            );
+            ));
             CommandResult::Continue
         }
     }
 }
 
-/// Prompts the user to confirm a mutating action.
-fn confirm_action(description: &str) -> bool {
-    println!("\n[Action required] {}", description);
-    print!("Proceed? (y/N): ");
-    let _ = std::io::stdout().flush();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp::protocol::ToolDefinition;
+    use crate::ui::{MockUi, UiEvent};
 
-    let mut input = String::new();
-    if std::io::stdin().read_line(&mut input).is_err() {
-        return false;
+    /// Helper: create a minimal `Conversation` with no tools.
+    fn test_conversation() -> Conversation {
+        Conversation::new(Vec::<ToolDefinition>::new(), 8192)
     }
 
-    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
-}
+    // ── Slash commands ──────────────────────────────────────────────
 
-fn dirs_path() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(std::path::PathBuf::from)
+    #[test]
+    fn test_quit_command() {
+        let mut conv = test_conversation();
+        let ui = MockUi::new(vec![]);
+        let result = handle_command("/quit", &mut conv, &ui);
+        assert!(matches!(result, CommandResult::Quit));
+        // /quit produces no UI output
+        assert!(ui.events().is_empty());
+    }
+
+    #[test]
+    fn test_exit_command() {
+        let mut conv = test_conversation();
+        let ui = MockUi::new(vec![]);
+        let result = handle_command("/exit", &mut conv, &ui);
+        assert!(matches!(result, CommandResult::Quit));
+    }
+
+    #[test]
+    fn test_q_command() {
+        let mut conv = test_conversation();
+        let ui = MockUi::new(vec![]);
+        let result = handle_command("/q", &mut conv, &ui);
+        assert!(matches!(result, CommandResult::Quit));
+    }
+
+    #[test]
+    fn test_clear_command() {
+        let mut conv = test_conversation();
+        let ui = MockUi::new(vec![]);
+        let result = handle_command("/clear", &mut conv, &ui);
+        assert!(matches!(result, CommandResult::Continue));
+
+        let events = ui.events();
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], UiEvent::CommandOutput(msg) if msg.contains("Conversation cleared"))
+        );
+    }
+
+    #[test]
+    fn test_reset_command() {
+        let mut conv = test_conversation();
+        let ui = MockUi::new(vec![]);
+        let result = handle_command("/reset", &mut conv, &ui);
+        assert!(matches!(result, CommandResult::Continue));
+
+        let events = ui.events();
+        assert!(
+            matches!(&events[0], UiEvent::CommandOutput(msg) if msg.contains("Conversation cleared"))
+        );
+    }
+
+    #[test]
+    fn test_help_command() {
+        let mut conv = test_conversation();
+        let ui = MockUi::new(vec![]);
+        let result = handle_command("/help", &mut conv, &ui);
+        assert!(matches!(result, CommandResult::Continue));
+
+        let events = ui.events();
+        // /help outputs multiple lines: header + 3 commands + blank
+        assert_eq!(events.len(), 5);
+        assert!(matches!(&events[0], UiEvent::CommandOutput(msg) if msg.contains("Commands:")));
+        assert!(matches!(&events[1], UiEvent::CommandOutput(msg) if msg.contains("/quit")));
+        assert!(matches!(&events[2], UiEvent::CommandOutput(msg) if msg.contains("/clear")));
+        assert!(matches!(&events[3], UiEvent::CommandOutput(msg) if msg.contains("/help")));
+    }
+
+    #[test]
+    fn test_unknown_command() {
+        let mut conv = test_conversation();
+        let ui = MockUi::new(vec![]);
+        let result = handle_command("/foobar", &mut conv, &ui);
+        assert!(matches!(result, CommandResult::Continue));
+
+        let events = ui.events();
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], UiEvent::CommandOutput(msg) if msg.contains("Unknown command: /foobar"))
+        );
+    }
+
+    // ── MockUi input / confirm behaviour ────────────────────────────
+
+    #[test]
+    fn test_mock_ui_empty_input() {
+        let ui = MockUi::new(vec!["".into()]);
+        let action = ui.read_user_input();
+        assert!(matches!(action, InputAction::Empty));
+    }
+
+    #[test]
+    fn test_mock_ui_message_input() {
+        let ui = MockUi::new(vec!["hello world".into()]);
+        let action = ui.read_user_input();
+        assert!(matches!(action, InputAction::Message(ref s) if s == "hello world"));
+    }
+
+    #[test]
+    fn test_mock_ui_eof_when_exhausted() {
+        let ui = MockUi::new(vec![]);
+        let action = ui.read_user_input();
+        assert!(matches!(action, InputAction::Eof));
+    }
+
+    #[test]
+    fn test_mock_ui_confirm_action_default_deny() {
+        let ui = MockUi::new(vec![]);
+        // No confirms scripted → default deny
+        assert!(!ui.confirm_action("do something dangerous"));
+
+        let events = ui.events();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            UiEvent::ConfirmAction { description, result }
+            if description == "do something dangerous" && !result
+        ));
+    }
+
+    #[test]
+    fn test_mock_ui_confirm_action_scripted_approve() {
+        let ui = MockUi::with_confirms(vec![], vec![true]);
+        assert!(ui.confirm_action("open channel"));
+
+        let events = ui.events();
+        assert!(matches!(
+            &events[0],
+            UiEvent::ConfirmAction { result, .. } if *result
+        ));
+    }
+
+    #[test]
+    fn test_mock_ui_records_streaming_events() {
+        let ui = MockUi::new(vec![]);
+        ui.display_banner();
+        ui.begin_assistant_response();
+        ui.stream_assistant_token("Hello ");
+        ui.stream_assistant_token("world");
+        ui.end_assistant_response();
+        ui.goodbye();
+
+        let events = ui.events();
+        assert_eq!(
+            events,
+            vec![
+                UiEvent::Banner,
+                UiEvent::BeginAssistantResponse,
+                UiEvent::AssistantToken("Hello ".into()),
+                UiEvent::AssistantToken("world".into()),
+                UiEvent::EndAssistantResponse,
+                UiEvent::Goodbye,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_mock_ui_records_status_events() {
+        let ui = MockUi::new(vec![]);
+        ui.update_status("processing...", false);
+        ui.update_status("still going...", true);
+        ui.clear_status();
+
+        let events = ui.events();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(
+            &events[0],
+            UiEvent::UpdateStatus { status, below_output }
+            if status == "processing..." && !below_output
+        ));
+        assert!(matches!(
+            &events[1],
+            UiEvent::UpdateStatus { status, below_output }
+            if status == "still going..." && *below_output
+        ));
+        assert!(matches!(&events[2], UiEvent::ClearStatus));
+    }
+
+    #[test]
+    fn test_mock_ui_records_tool_events() {
+        use std::time::Duration;
+
+        let ui = MockUi::new(vec![]);
+        ui.show_tool_progress("get_balances", Duration::from_secs_f32(1.5));
+        ui.clear_tool_progress();
+        ui.show_tool_result(
+            "get_balances",
+            Duration::from_secs_f32(2.0),
+            "balance: 100000 sats",
+            false,
+        );
+
+        let events = ui.events();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(
+            &events[0],
+            UiEvent::ToolProgress { name, .. } if name == "get_balances"
+        ));
+        assert!(matches!(&events[1], UiEvent::ClearToolProgress));
+        assert!(matches!(
+            &events[2],
+            UiEvent::ToolResult { name, is_error, .. }
+            if name == "get_balances" && !is_error
+        ));
+    }
+
+    #[test]
+    fn test_mock_ui_records_warning_and_error() {
+        let ui = MockUi::new(vec![]);
+        ui.show_warning("generation truncated");
+        ui.show_error("something went wrong");
+        ui.show_info("just FYI");
+
+        let events = ui.events();
+        assert_eq!(
+            events,
+            vec![
+                UiEvent::Warning("generation truncated".into()),
+                UiEvent::Error("something went wrong".into()),
+                UiEvent::Info("just FYI".into()),
+            ]
+        );
+    }
 }

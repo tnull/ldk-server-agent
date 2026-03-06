@@ -7,14 +7,17 @@ mod mcp;
 mod prompt;
 mod safety;
 mod tool_call;
+pub mod ui;
 
 use std::path::PathBuf;
 use std::process;
+use std::sync::Arc;
 
 use config::Config;
 use conversation::Conversation;
 use llm::LlmEngine;
 use mcp::McpClient;
+use ui::TerminalUi;
 
 const DEFAULT_CONFIG_PATH: &str = "config.toml";
 
@@ -75,8 +78,18 @@ async fn main() {
 
     let conversation = Conversation::new(mcp.tools().to_vec(), llm.context_size());
 
-    if let Err(e) = cli::run_repl(llm, mcp, conversation).await {
+    let terminal_ui = match TerminalUi::new() {
+        Ok(ui) => Arc::new(ui),
+        Err(e) => {
+            eprintln!("Failed to initialize terminal: {}", e);
+            process::exit(1);
+        }
+    };
+
+    if let Err(e) = cli::run_repl(llm, mcp, conversation, terminal_ui.clone()).await {
         eprintln!("Fatal error: {}", e);
         process::exit(1);
     }
+
+    terminal_ui.save_history();
 }
