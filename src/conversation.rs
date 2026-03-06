@@ -27,7 +27,7 @@ const MAX_TOOL_ROUNDS: usize = 10;
 ///   32k ctx  →  ~8 000 chars  (~2 000 tokens) per tool result
 ///   65k ctx  →  ~16 000 chars (~4 000 tokens) per tool result
 ///  128k ctx  →  ~32 000 chars (~8 000 tokens) per tool result
-const TOOL_RESULT_CONTEXT_DIVISOR: u32 = 4;
+const TOOL_RESULT_CONTEXT_DIVISOR: u32 = 16;
 
 /// Manages the conversation state and orchestrates tool-use loops.
 pub struct Conversation {
