@@ -9,6 +9,9 @@ const BOLD: &str = "\x1b[1m";
 const ITALIC: &str = "\x1b[3m";
 const UNDERLINE: &str = "\x1b[4m";
 const RESET: &str = "\x1b[0m";
+/// Dim grey for `<think>` blocks — 256-color 243 to distinguish from the
+/// bright-black (`\x1b[90m`) used for tool-status messages.
+const THINK_DIM: &str = "\x1b[38;5;243m";
 
 /// A line-buffering markdown renderer for streaming token output.
 ///
@@ -17,6 +20,7 @@ const RESET: &str = "\x1b[0m";
 pub struct StreamRenderer {
     buf: String,
     in_tool_call: bool,
+    in_think: bool,
 }
 
 impl StreamRenderer {
@@ -24,6 +28,7 @@ impl StreamRenderer {
         Self {
             buf: String::new(),
             in_tool_call: false,
+            in_think: false,
         }
     }
 
@@ -53,49 +58,113 @@ impl StreamRenderer {
             let line = std::mem::take(&mut self.buf);
             self.emit_line(&line, emit);
         }
+        // If we're still inside a think block when the generation ends,
+        // make sure we reset the terminal color.
+        if self.in_think {
+            emit(RESET);
+            self.in_think = false;
+        }
     }
 
-    /// Resets the tool-call suppression state and flushes the buffer.
+    /// Resets the tool-call / think suppression state and flushes the buffer.
     ///
     /// Call this between LLM generation rounds (after tool calls have been
     /// executed) so that a `<tool_call>` tag whose closing tag was never
     /// flushed through the line buffer doesn't permanently suppress all
     /// subsequent output.
     pub fn reset_tool_call_state(&mut self, emit: &mut dyn FnMut(&str)) {
+        if self.in_think {
+            emit(RESET);
+        }
         self.flush(emit);
         self.in_tool_call = false;
+        self.in_think = false;
     }
 
     /// Processes a single line, emitting any visible (non-tool-call) portions.
-    /// Returns `true` if any content was emitted.
+    /// `<tool_call>` content is fully suppressed; `<think>` content is rendered
+    /// in a dim grey.  Returns `true` if any content was emitted.
     fn emit_line(&mut self, line: &str, emit: &mut dyn FnMut(&str)) -> bool {
-        const OPEN: &str = "<tool_call>";
-        const CLOSE: &str = "</tool_call>";
+        const TC_OPEN: &str = "<tool_call>";
+        const TC_CLOSE: &str = "</tool_call>";
+        const TH_OPEN: &str = "<think>";
+        const TH_CLOSE: &str = "</think>";
 
         let mut rest = line;
         let mut emitted = false;
 
         while !rest.is_empty() {
             if self.in_tool_call {
-                if let Some(close_idx) = rest.find(CLOSE) {
-                    let end = close_idx + CLOSE.len();
+                // Inside a tool-call block — suppress everything until closing tag.
+                if let Some(close_idx) = rest.find(TC_CLOSE) {
+                    let end = close_idx + TC_CLOSE.len();
                     self.in_tool_call = false;
                     rest = &rest[end..];
                 } else {
                     break;
                 }
-            } else if let Some(open_idx) = rest.find(OPEN) {
-                let before = &rest[..open_idx];
-                if !before.is_empty() {
-                    emit(&render_line(before));
+            } else if self.in_think {
+                // Inside a think block — render in dim grey until closing tag.
+                if let Some(close_idx) = rest.find(TH_CLOSE) {
+                    let before = &rest[..close_idx];
+                    if !before.is_empty() {
+                        emit(&render_line(before));
+                        emitted = true;
+                    }
+                    emit(RESET);
+                    emit("\n");
+                    self.in_think = false;
+                    rest = &rest[close_idx + TH_CLOSE.len()..];
+                } else {
+                    // Entire rest is still inside think — emit it grey.
+                    emit(&render_line(rest));
                     emitted = true;
+                    break;
                 }
-                self.in_tool_call = true;
-                rest = &rest[open_idx + OPEN.len()..];
             } else {
-                emit(&render_line(rest));
-                emitted = true;
-                break;
+                // Outside any special block — find the earliest opening tag.
+                let tc_pos = rest.find(TC_OPEN);
+                let th_pos = rest.find(TH_OPEN);
+
+                match (tc_pos, th_pos) {
+                    (Some(tc), Some(th)) if tc <= th => {
+                        // tool_call comes first
+                        let before = &rest[..tc];
+                        if !before.is_empty() {
+                            emit(&render_line(before));
+                            emitted = true;
+                        }
+                        self.in_tool_call = true;
+                        rest = &rest[tc + TC_OPEN.len()..];
+                    }
+                    (_, Some(th)) => {
+                        // think comes first (or only think present)
+                        let before = &rest[..th];
+                        if !before.is_empty() {
+                            emit(&render_line(before));
+                            emitted = true;
+                        }
+                        emit(THINK_DIM);
+                        self.in_think = true;
+                        rest = &rest[th + TH_OPEN.len()..];
+                    }
+                    (Some(tc), None) => {
+                        // only tool_call present
+                        let before = &rest[..tc];
+                        if !before.is_empty() {
+                            emit(&render_line(before));
+                            emitted = true;
+                        }
+                        self.in_tool_call = true;
+                        rest = &rest[tc + TC_OPEN.len()..];
+                    }
+                    (None, None) => {
+                        // No special tags — render normally.
+                        emit(&render_line(rest));
+                        emitted = true;
+                        break;
+                    }
+                }
             }
         }
 
@@ -362,6 +431,113 @@ mod tests {
         assert!(
             output.ends_with("Now plain text"),
             "text after </tool_call> should remain visible"
+        );
+    }
+
+    #[test]
+    fn test_think_block_rendered_in_dim_grey() {
+        let mut renderer = StreamRenderer::new();
+        let mut output = String::new();
+
+        renderer.push("<think>I need to reason about this</think>\n", &mut |s| {
+            output.push_str(s)
+        });
+
+        assert!(
+            output.contains(THINK_DIM),
+            "think content should start with dim grey"
+        );
+        assert!(
+            output.contains("I need to reason about this"),
+            "think content should be visible"
+        );
+        assert!(
+            output.contains(RESET),
+            "think content should end with reset"
+        );
+        assert!(!output.contains("<think>"));
+        assert!(!output.contains("</think>"));
+    }
+
+    #[test]
+    fn test_think_block_multiline() {
+        let mut renderer = StreamRenderer::new();
+        let mut output = String::new();
+
+        renderer.push("<think>\n", &mut |s| output.push_str(s));
+        assert!(output.contains(THINK_DIM), "dim color should be set");
+
+        let before = output.clone();
+        renderer.push("line one\n", &mut |s| output.push_str(s));
+        let new_part = &output[before.len()..];
+        assert!(
+            new_part.contains("line one"),
+            "think lines should be emitted"
+        );
+
+        let before = output.clone();
+        renderer.push("</think>\n", &mut |s| output.push_str(s));
+        let new_part = &output[before.len()..];
+        assert!(new_part.contains(RESET), "closing think should emit RESET");
+    }
+
+    #[test]
+    fn test_text_after_think_block_is_normal() {
+        let mut renderer = StreamRenderer::new();
+        let mut output = String::new();
+
+        renderer.push("<think>reasoning</think>Normal text\n", &mut |s| {
+            output.push_str(s)
+        });
+
+        assert!(output.contains(THINK_DIM));
+        assert!(output.contains("reasoning"));
+        assert!(output.contains("Normal text"));
+
+        // The RESET should appear between the think content and normal text.
+        let dim_pos = output.find(THINK_DIM).unwrap();
+        let reset_pos = output.find(RESET).unwrap();
+        let normal_pos = output.find("Normal text").unwrap();
+        assert!(
+            dim_pos < reset_pos && reset_pos < normal_pos,
+            "order should be: dim -> reset -> normal text"
+        );
+    }
+
+    #[test]
+    fn test_think_block_emits_trailing_newline() {
+        let mut renderer = StreamRenderer::new();
+        let mut output = String::new();
+
+        renderer.push("<think>reasoning</think>answer\n", &mut |s| {
+            output.push_str(s)
+        });
+
+        // After the RESET that closes the think block there should be a '\n'
+        // separating the thinking from the subsequent answer text.
+        let reset_pos = output.find(RESET).unwrap();
+        let after_reset = &output[reset_pos + RESET.len()..];
+        assert!(
+            after_reset.starts_with('\n'),
+            "a newline should follow the think-block RESET, got: {:?}",
+            after_reset
+        );
+    }
+
+    #[test]
+    fn test_think_flush_resets_color() {
+        let mut renderer = StreamRenderer::new();
+        let mut output = String::new();
+
+        // Push a think block that never closes.
+        renderer.push("<think>still thinking", &mut |s| output.push_str(s));
+        renderer.flush(&mut |s| output.push_str(s));
+
+        assert!(output.contains(THINK_DIM));
+        assert!(output.contains("still thinking"));
+        assert!(
+            output.contains(RESET),
+            "flush should reset color on unclosed think"
         );
     }
 }
