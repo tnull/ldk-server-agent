@@ -37,8 +37,13 @@ impl StreamRenderer {
             let line: String = self.buf.drain(..=nl).collect();
             // line includes the trailing '\n'
             let trimmed = line.trim_end_matches('\n');
-            self.emit_line(trimmed, emit);
-            emit("\n");
+            let emitted = self.emit_line(trimmed, emit);
+            // Only forward the newline when the line actually produced
+            // visible output — otherwise suppressed tool-call lines leak
+            // blank lines into the terminal.
+            if emitted {
+                emit("\n");
+            }
         }
     }
 
@@ -61,11 +66,14 @@ impl StreamRenderer {
         self.in_tool_call = false;
     }
 
-    fn emit_line(&mut self, line: &str, emit: &mut dyn FnMut(&str)) {
+    /// Processes a single line, emitting any visible (non-tool-call) portions.
+    /// Returns `true` if any content was emitted.
+    fn emit_line(&mut self, line: &str, emit: &mut dyn FnMut(&str)) -> bool {
         const OPEN: &str = "<tool_call>";
         const CLOSE: &str = "</tool_call>";
 
         let mut rest = line;
+        let mut emitted = false;
 
         while !rest.is_empty() {
             if self.in_tool_call {
@@ -80,14 +88,18 @@ impl StreamRenderer {
                 let before = &rest[..open_idx];
                 if !before.is_empty() {
                     emit(&render_line(before));
+                    emitted = true;
                 }
                 self.in_tool_call = true;
                 rest = &rest[open_idx + OPEN.len()..];
             } else {
                 emit(&render_line(rest));
+                emitted = true;
                 break;
             }
         }
+
+        emitted
     }
 }
 
