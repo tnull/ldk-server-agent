@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
+use std::sync::Arc;
 
 /// A message in the conversation history.
 #[derive(Debug, Clone)]
@@ -60,15 +60,15 @@ mod engine {
     use std::path::Path;
     use std::sync::atomic::Ordering;
 
-    use anyhow::{Context, bail};
-    use llama_cpp_2::LogOptions;
-    use llama_cpp_2::context::LlamaContext;
+    use anyhow::{bail, Context};
     use llama_cpp_2::context::params::{KvCacheType, LlamaContextParams};
+    use llama_cpp_2::context::LlamaContext;
     use llama_cpp_2::llama_backend::LlamaBackend;
     use llama_cpp_2::llama_batch::LlamaBatch;
     use llama_cpp_2::model::params::LlamaModelParams;
     use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel};
     use llama_cpp_2::sampling::LlamaSampler;
+    use llama_cpp_2::LogOptions;
 
     use super::ChatMessage;
     use crate::mcp::protocol::ToolDefinition;
@@ -214,7 +214,6 @@ mod engine {
             stats
                 .message_count
                 .store(messages.len() as u32, Ordering::Relaxed);
-            stats.generated_tokens.store(0, Ordering::Relaxed);
 
             if tokens.len() as u32 >= self.context_size {
                 bail!(
