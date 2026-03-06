@@ -163,22 +163,32 @@ pub async fn run_repl(
 
                 let got_first_for_cb = Arc::clone(&got_first_token);
                 let mut first_token_time = None;
-                let mut md_renderer = StreamRenderer::new();
+                let md_renderer = std::cell::RefCell::new(StreamRenderer::new());
 
                 let result = {
-                    let md = &mut md_renderer;
+                    let md = &md_renderer;
                     let ftt = &mut first_token_time;
+                    let got_first_ref = &got_first_for_cb;
                     let mut on_token = |token: &str| {
-                        if !got_first_for_cb.load(Ordering::Relaxed) {
-                            got_first_for_cb.store(true, Ordering::Relaxed);
+                        if !got_first_ref.load(Ordering::Relaxed) {
+                            got_first_ref.store(true, Ordering::Relaxed);
                             *ftt = Some(start.elapsed());
                             eprint!("\r\x1b[2K");
                             print!("{BRIGHT}assistant>{RESET} ");
                         }
-                        md.push(token, &mut |rendered| {
+                        md.borrow_mut().push(token, &mut |rendered| {
                             print!("{}", rendered);
                             let _ = std::io::stdout().flush();
                         });
+                    };
+
+                    let mut on_round_complete = || {
+                        md_renderer
+                            .borrow_mut()
+                            .reset_tool_call_state(&mut |rendered| {
+                                print!("{}", rendered);
+                                let _ = std::io::stdout().flush();
+                            });
                     };
 
                     let mut confirm_fn =
@@ -187,12 +197,19 @@ pub async fn run_repl(
                         };
 
                     conversation
-                        .send_message(input, &llm, &mut mcp, &mut on_token, &mut confirm_fn)
+                        .send_message(
+                            input,
+                            &llm,
+                            &mut mcp,
+                            &mut on_token,
+                            &mut on_round_complete,
+                            &mut confirm_fn,
+                        )
                         .await
                 };
 
                 // Flush any remaining partial line from the renderer.
-                md_renderer.flush(&mut |rendered| {
+                md_renderer.borrow_mut().flush(&mut |rendered| {
                     print!("{}", rendered);
                     let _ = std::io::stdout().flush();
                 });

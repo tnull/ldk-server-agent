@@ -50,6 +50,17 @@ impl StreamRenderer {
         }
     }
 
+    /// Resets the tool-call suppression state and flushes the buffer.
+    ///
+    /// Call this between LLM generation rounds (after tool calls have been
+    /// executed) so that a `<tool_call>` tag whose closing tag was never
+    /// flushed through the line buffer doesn't permanently suppress all
+    /// subsequent output.
+    pub fn reset_tool_call_state(&mut self, emit: &mut dyn FnMut(&str)) {
+        self.flush(emit);
+        self.in_tool_call = false;
+    }
+
     fn emit_line(&mut self, line: &str, emit: &mut dyn FnMut(&str)) {
         const OPEN: &str = "<tool_call>";
         const CLOSE: &str = "</tool_call>";

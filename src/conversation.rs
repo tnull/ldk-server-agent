@@ -47,6 +47,7 @@ impl Conversation {
         llm: &LlmEngine,
         mcp: &mut McpClient,
         on_token: &mut dyn FnMut(&str),
+        on_round_complete: &mut dyn FnMut(),
         confirm_fn: &mut dyn FnMut(&str, &str, &serde_json::Value) -> bool,
     ) -> anyhow::Result<String> {
         self.messages.push(ChatMessage {
@@ -86,9 +87,11 @@ impl Conversation {
                 content: generated,
             });
 
-            // Keep tool-progress stderr updates from overwriting the assistant's
-            // streamed text when the model ended without a trailing newline.
-            on_token("\n");
+            // Signal that a generation round with tool calls has finished.
+            // This allows the caller to flush/reset streaming render state
+            // (e.g. the markdown renderer's tool-call suppression flag) so
+            // that the next generation round's output is not swallowed.
+            on_round_complete();
 
             for call in &tool_calls {
                 let result = self.execute_tool_call(call, mcp, confirm_fn).await?;
